@@ -285,17 +285,27 @@ let _positionsInflight = null; // deduplicates concurrent calls
 
 // ─── Fetch DLMM PnL API for all positions in a pool ────────────
 async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
+  const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
   try {
-    const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${walletAddress}&status=open&pageSize=100&page=1`;
     const res = await fetch(url);
-    if (!res.ok) return {};
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log("pnl_api", `HTTP ${res.status} for pool ${poolAddress.slice(0, 8)}: ${body.slice(0, 120)}`);
+      return {};
+    }
     const data = await res.json();
+    const positions = data.positions || data.data || [];
+    if (positions.length === 0) {
+      log("pnl_api", `No positions returned for pool ${poolAddress.slice(0, 8)} — keys: ${Object.keys(data).join(", ")}`);
+    }
     const byAddress = {};
-    for (const p of (data.positions || [])) {
-      if (p.positionAddress) byAddress[p.positionAddress] = p;
+    for (const p of positions) {
+      const addr = p.positionAddress || p.address || p.position;
+      if (addr) byAddress[addr] = p;
     }
     return byAddress;
-  } catch {
+  } catch (e) {
+    log("pnl_api", `Fetch error for pool ${poolAddress.slice(0, 8)}: ${e.message}`);
     return {};
   }
 }
