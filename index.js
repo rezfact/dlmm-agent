@@ -1,7 +1,7 @@
 import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
-import { agentLoop } from "./agent.js";
+import { agentLoop, isAgentLoopRunning } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl, closePosition } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
@@ -103,6 +103,10 @@ function stopCronJobs() {
 }
 
 export async function runManagementCycle({ silent = false } = {}) {
+  if (isAgentLoopRunning()) {
+    log("cron", "Management skipped — another agent run is still in progress (e.g. startup or screening)");
+    return null;
+  }
   log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
   let mgmtReport = null;
   let positions = [];
@@ -231,6 +235,10 @@ After all positions, add one summary line:
 
 export async function runScreeningCycle({ silent = false } = {}) {
     if (_screeningBusy) return;
+    if (isAgentLoopRunning()) {
+      log("cron", "Screening skipped — another agent run is still in progress (e.g. startup check)");
+      return;
+    }
 
     // Hard guards — don't even run the agent if preconditions aren't met
     let prePositions, preBalance;
@@ -376,7 +384,7 @@ export function startCronJobs() {
   stopCronJobs();
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
-    if (_managementBusy) return;
+    if (_managementBusy || isAgentLoopRunning()) return;
     _managementBusy = true;
     timers.managementLastRun = Date.now();
     try { await runManagementCycle(); }
@@ -397,7 +405,7 @@ export function startCronJobs() {
         })();
 
   const healthTask = cron.schedule(healthCron, async () => {
-    if (_managementBusy) return;
+    if (_managementBusy || isAgentLoopRunning()) return;
     _managementBusy = true;
     log("cron", "Starting health check");
     try {

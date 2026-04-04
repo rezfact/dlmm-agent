@@ -19,6 +19,21 @@ import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
+/** True while any agentLoop is executing — crons skip new work to avoid interleaved steps / double screening. */
+let _agentLoopActive = false;
+export function isAgentLoopRunning() {
+  return _agentLoopActive;
+}
+
+function isTransientLlmError(err) {
+  const msg = (err?.message || String(err)).toLowerCase();
+  return (
+    /unexpected end of json|invalid json|econnreset|etimedout|socket hang up|fetch failed|network|aborted/.test(
+      msg
+    ) || err?.code === "ECONNRESET"
+  );
+}
+
 // Supports OpenRouter (default), Anthropic direct, or any OpenAI-compatible server (e.g. LM Studio)
 // To use Anthropic direct: set LLM_BASE_URL=https://api.anthropic.com/v1 and ANTHROPIC_API_KEY in .env
 // To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
@@ -107,6 +122,22 @@ function coerceModelForProvider(requestedModel, routing) {
  * @returns {string} - The agent's final text response
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null) {
+  _agentLoopActive = true;
+  try {
+    return await runAgentLoopInner(
+      goal,
+      maxSteps,
+      sessionHistory,
+      agentType,
+      model,
+      maxOutputTokens
+    );
+  } finally {
+    _agentLoopActive = false;
+  }
+}
+
+async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, model, maxOutputTokens) {
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
@@ -141,17 +172,34 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     try {
       let usedModel = primaryModel;
 
-      // Retry up to 3 times on transient provider errors (502, 503, 529)
+      // Retry: HTTP/JSON flakes (OpenRouter free tier), empty body, and 502/503/529
       let response;
       for (let attempt = 0; attempt < 3; attempt++) {
-        response = await client.chat.completions.create({
-          model: usedModel,
-          messages,
-          tools: getToolsForRole(agentType),
-          tool_choice: "auto",
-          temperature: config.llm.temperature,
-          max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        });
+        try {
+          response = await client.chat.completions.create({
+            model: usedModel,
+            messages,
+            tools: getToolsForRole(agentType),
+            tool_choice: "auto",
+            temperature: config.llm.temperature,
+            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+          });
+        } catch (err) {
+          if (isTransientLlmError(err) && attempt < 2) {
+            const wait = (attempt + 1) * 3000;
+            log(
+              "agent",
+              `LLM transport error, retry in ${wait / 1000}s (${(err.message || err).slice(0, 100)})`
+            );
+            if (attempt === 1 && usedModel !== fallbackModel) {
+              usedModel = fallbackModel;
+              log("agent", `Switching to fallback model ${fallbackModel}`);
+            }
+            await sleep(wait);
+            continue;
+          }
+          throw err;
+        }
         if (response.choices?.length) break;
         const errCode = response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 529) {
