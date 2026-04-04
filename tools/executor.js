@@ -421,8 +421,8 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Check SOL balance (skip for tokenX-only deploys)
-      if (amountY > 0) {
+      // Check SOL balance (skip for tokenX-only deploys; skip entirely in DRY_RUN so you can test without funding)
+      if (amountY > 0 && process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;
         const minRequired = amountY + gasReserve;

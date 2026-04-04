@@ -10,8 +10,15 @@ const u = fs.existsSync(USER_CONFIG_PATH)
   : {};
 
 // Apply wallet/RPC from user-config if not already in env
-if (u.rpcUrl)    process.env.RPC_URL            ||= u.rpcUrl;
-if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
+if (u.rpcUrl) process.env.RPC_URL ||= u.rpcUrl;
+if (u.walletKey) {
+  console.warn(
+    "[config] WARNING: walletKey found in user-config.json. " +
+    "Store your private key in .env as WALLET_PRIVATE_KEY instead. " +
+    "Keeping secrets in user-config.json risks exposure if the file is synced or shared."
+  );
+  process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
+}
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 

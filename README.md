@@ -53,10 +53,12 @@ Agents are powered via **OpenRouter** and can be swapped for any compatible mode
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/yunus-0x/meridian
-cd meridian
+git clone https://github.com/YOUR_USERNAME/meridian.git
+cd dlmm-agent
 npm install
 ```
+
+Replace `YOUR_USERNAME` with your GitHub username (or use your fork URL).
 
 ### 2. Run the setup wizard
 

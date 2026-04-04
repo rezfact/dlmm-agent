@@ -1,8 +1,8 @@
 {
-  "name": "dlmm-agent",
+  "name": "meridian",
   "version": "1.0.0",
   "type": "module",
-  "description": "Autonomous DLMM LP agent for Meteora on Solana",
+  "description": "Meridian — autonomous Meteora DLMM liquidity agent for Solana (LLM-powered)",
   "main": "index.js",
   "bin": {
     "meridian": "cli.js"
@@ -13,10 +13,11 @@
     "dev": "DRY_RUN=true node index.js",
     "test:screen": "node test/test-screening.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
+    "test:smoke": "node test/test-screening.js && DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },
   "dependencies": {
-    "@meteora-ag/dlmm": "latest",
+    "@meteora-ag/dlmm": "1.9.4",
     "@solana/spl-token": "^0.3.11",
     "@solana/web3.js": "^1.95.0",
     "bn.js": "^5.2.1",

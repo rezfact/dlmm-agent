@@ -18,15 +18,21 @@ import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
-// Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
+// Supports OpenRouter (default), Anthropic direct, or any OpenAI-compatible server (e.g. LM Studio)
+// To use Anthropic direct: set LLM_BASE_URL=https://api.anthropic.com/v1 and ANTHROPIC_API_KEY in .env
 // To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
+const isAnthropic  = LLM_BASE_URL.includes("anthropic.com");
+
 const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
+  baseURL: LLM_BASE_URL,
+  apiKey:  process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY,
   timeout: 5 * 60 * 1000,
+  defaultHeaders: isAnthropic ? { "anthropic-version": "2023-06-01" } : {},
 });
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
+const DEFAULT_MODEL  = process.env.LLM_MODEL || (isAnthropic ? "claude-haiku-4-5" : "openrouter/healer-alpha");
+const FALLBACK_MODEL = isAnthropic ? "claude-haiku-4-5" : "stepfun/step-3.5-flash:free";
 
 /**
  * Core ReAct agent loop.
@@ -57,7 +63,6 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const activeModel = model || DEFAULT_MODEL;
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
       let response;
       let usedModel = activeModel;
       for (let attempt = 0; attempt < 3; attempt++) {

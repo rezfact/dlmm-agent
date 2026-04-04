@@ -37,6 +37,14 @@ function saveChatId(id) {
 
 loadChatId();
 
+if (TOKEN && !chatId) {
+  console.warn(
+    "[telegram] WARNING: TELEGRAM_CHAT_ID is not set. " +
+    "The FIRST person to message this bot will be registered as owner. " +
+    "Set TELEGRAM_CHAT_ID in your .env to prevent unauthorized access."
+  );
+}
+
 // ─── Core send ───────────────────────────────────────────────────
 export function isEnabled() {
   return !!TOKEN;
