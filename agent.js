@@ -4,7 +4,8 @@ import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
 
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "update_config", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "withdraw_liquidity", "add_liquidity", "list_strategies", "get_strategy", "set_active_strategy", "get_pool_detail", "get_token_info", "get_active_bin", "study_top_lpers"]);
-const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "update_config", "get_wallet_balance", "get_my_positions", "list_strategies", "get_strategy", "set_active_strategy", "swap_token", "add_liquidity", "study_top_lpers", "get_pool_detail"]);
+// update_config omitted for SCREENER — avoids cron thrash + extra LLM/tool turns during screening
+const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "get_wallet_balance", "get_my_positions", "list_strategies", "get_strategy", "set_active_strategy", "swap_token", "add_liquidity", "study_top_lpers", "get_pool_detail"]);
 
 function getToolsForRole(agentType) {
   if (agentType === "MANAGER")  return tools.filter(t => MANAGER_TOOLS.has(t.function.name));
@@ -21,18 +22,82 @@ import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 // Supports OpenRouter (default), Anthropic direct, or any OpenAI-compatible server (e.g. LM Studio)
 // To use Anthropic direct: set LLM_BASE_URL=https://api.anthropic.com/v1 and ANTHROPIC_API_KEY in .env
 // To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
+//
+// Hybrid (LLM_HYBRID=true): premium endpoint for MANAGER only; OpenRouter for SCREENER + GENERAL.
+// Set OPENROUTER_API_KEY (or LLM_BUDGET_API_KEY) + optional LLM_BUDGET_BASE_URL (default openrouter).
 const LLM_BASE_URL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
-const isAnthropic  = LLM_BASE_URL.includes("anthropic.com");
+const LLM_HYBRID =
+  process.env.LLM_HYBRID === "true" || process.env.LLM_HYBRID === "1";
+const BUDGET_BASE_URL =
+  process.env.LLM_BUDGET_BASE_URL || "https://openrouter.ai/api/v1";
+const BUDGET_API_KEY =
+  process.env.LLM_BUDGET_API_KEY || process.env.OPENROUTER_API_KEY || "";
+const PREMIUM_API_KEY =
+  process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY;
 
-const client = new OpenAI({
-  baseURL: LLM_BASE_URL,
-  apiKey:  process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY,
-  timeout: 5 * 60 * 1000,
-  defaultHeaders: isAnthropic ? { "anthropic-version": "2023-06-01" } : {},
-});
+function makeClient(baseURL, apiKey) {
+  const isAnthropic = baseURL.includes("anthropic.com");
+  return {
+    client: new OpenAI({
+      baseURL,
+      apiKey,
+      timeout: 5 * 60 * 1000,
+      defaultHeaders: isAnthropic ? { "anthropic-version": "2023-06-01" } : {},
+    }),
+    isAnthropic,
+  };
+}
 
-const DEFAULT_MODEL  = process.env.LLM_MODEL || (isAnthropic ? "claude-haiku-4-5" : "openrouter/healer-alpha");
-const FALLBACK_MODEL = isAnthropic ? "claude-haiku-4-5" : "stepfun/step-3.5-flash:free";
+const premium = makeClient(LLM_BASE_URL, PREMIUM_API_KEY);
+const budget =
+  BUDGET_API_KEY ? makeClient(BUDGET_BASE_URL, BUDGET_API_KEY) : null;
+
+if (LLM_HYBRID && !budget) {
+  log(
+    "warn",
+    "LLM_HYBRID=true but no OPENROUTER_API_KEY (or LLM_BUDGET_API_KEY); SCREENER/GENERAL use premium endpoint"
+  );
+}
+
+const DEFAULT_MODEL =
+  process.env.LLM_MODEL ||
+  (premium.isAnthropic ? "claude-haiku-4-5" : "openrouter/healer-alpha");
+const BUDGET_FALLBACK = "stepfun/step-3.5-flash:free";
+const PREMIUM_FALLBACK = premium.isAnthropic
+  ? "claude-haiku-4-5"
+  : BUDGET_FALLBACK;
+
+function useBudgetForRole(agentType) {
+  return (
+    LLM_HYBRID &&
+    budget &&
+    (agentType === "SCREENER" || agentType === "GENERAL")
+  );
+}
+
+function pickClientAndFallback(agentType) {
+  if (useBudgetForRole(agentType)) {
+    return { ...budget, fallbackModel: BUDGET_FALLBACK };
+  }
+  return { ...premium, fallbackModel: PREMIUM_FALLBACK };
+}
+
+/** When caller omits `model`, use the same per-role defaults as index.js (avoids Claude ids on OpenRouter). */
+function defaultModelForRole(agentType) {
+  if (agentType === "MANAGER") return config.llm.managementModel;
+  if (agentType === "SCREENER") return config.llm.screeningModel;
+  return config.llm.generalModel;
+}
+
+/** Anthropic-style model id on OpenRouter would 404 — remap to budget default (no log; caller logs once). */
+function coerceModelForProvider(requestedModel, routing) {
+  const m = requestedModel;
+  const onOpenRouter = !routing.isAnthropic;
+  if (onOpenRouter && m && !m.includes("/") && /^claude/i.test(m)) {
+    return process.env.LLM_BUDGET_MODEL || BUDGET_FALLBACK;
+  }
+  return m;
+}
 
 /**
  * Core ReAct agent loop.
@@ -55,16 +120,29 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     { role: "user", content: goal },
   ];
 
+  const routing = pickClientAndFallback(agentType);
+  const { client, fallbackModel } = routing;
+  const rawModel =
+    model != null && model !== ""
+      ? model
+      : defaultModelForRole(agentType) || DEFAULT_MODEL;
+  const primaryModel = coerceModelForProvider(rawModel, routing);
+  if (primaryModel !== rawModel) {
+    log(
+      "agent",
+      `Budget route: using "${primaryModel}" (model "${rawModel}" is not valid on OpenRouter)`
+    );
+  }
+
   let emptyStreak = 0;
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || DEFAULT_MODEL;
+      let usedModel = primaryModel;
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
       let response;
-      let usedModel = activeModel;
       for (let attempt = 0; attempt < 3; attempt++) {
         response = await client.chat.completions.create({
           model: usedModel,
@@ -78,9 +156,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         const errCode = response.error?.code;
         if (errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
-          if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
-            usedModel = FALLBACK_MODEL;
-            log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
+          if (attempt === 1 && usedModel !== fallbackModel) {
+            usedModel = fallbackModel;
+            log("agent", `Switching to fallback model ${fallbackModel}`);
           } else {
             log("agent", `Provider error ${errCode}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
             await new Promise((r) => setTimeout(r, wait));

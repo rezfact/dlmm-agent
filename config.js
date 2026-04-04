@@ -23,6 +23,11 @@ if (u.walletKey) {
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 
+const LLM_HYBRID =
+  process.env.LLM_HYBRID === "true" || process.env.LLM_HYBRID === "1";
+const LLM_BUDGET_MODEL_DEFAULT =
+  process.env.LLM_BUDGET_MODEL || "stepfun/step-3.5-flash:free";
+
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
@@ -84,9 +89,17 @@ export const config = {
     temperature: u.temperature ?? 0.373,
     maxTokens:   u.maxTokens   ?? 4096,
     maxSteps:    u.maxSteps    ?? 20,
-    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
-    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "openrouter/hunter-alpha",
-    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+    // Hybrid: premium (Anthropic via LLM_BASE_URL) for manager; budget (OpenRouter) for screener + chat
+    managementModel:
+      u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+    screeningModel:
+      u.screeningModel
+      ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
+      ?? "openrouter/hunter-alpha",
+    generalModel:
+      u.generalModel
+      ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
+      ?? "openrouter/healer-alpha",
   },
 
   // ─── Common Token Mints ────────────────

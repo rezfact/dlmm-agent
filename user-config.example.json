@@ -28,7 +28,7 @@
   "minVolumeToRebalance": 1000,
   "managementIntervalMin": 5,
   "screeningIntervalMin": 30,
-  "healthCheckIntervalMin": 60,
+  "healthCheckIntervalMin": 180,
   "maxSteps": 20,
   "temperature": 0.3,
   "dryRun": false,

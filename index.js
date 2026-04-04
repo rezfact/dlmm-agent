@@ -21,6 +21,12 @@ log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
 
+/** Fewer LLM calls: no screening fired from management cron (only the screening schedule runs). */
+const LLM_SAVER = process.env.MERIDIAN_LLM_SAVER === "true" || process.env.MERIDIAN_LLM_SAVER === "1";
+if (LLM_SAVER) {
+  log("startup", "MERIDIAN_LLM_SAVER=1 — screening only on screeningIntervalMin cron (not every management tick)");
+}
+
 const TP_PCT  = config.management.takeProfitFeePct;
 const DEPLOY  = config.management.deployAmountSol;
 
@@ -106,8 +112,12 @@ export async function runManagementCycle({ silent = false } = {}) {
       positions = livePositions?.positions || [];
 
       if (positions.length === 0) {
-        log("cron", "No open positions — triggering screening cycle");
-        runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+        if (!LLM_SAVER) {
+          log("cron", "No open positions — triggering screening cycle");
+          runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+        } else {
+          log("cron", "No open positions — skip extra screening (MERIDIAN_LLM_SAVER; use screening cron)");
+        }
         return;
       }
 
@@ -123,12 +133,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         if (cronStarted) startCronJobs();
       }
 
-      // Also trigger screening if under max positions — cooldown 5min to avoid spamming
-      const screeningCooldownMs = 5 * 60 * 1000;
-      if (positions.length < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
-        _screeningLastTriggered = Date.now();
-        log("cron", `Positions (${positions.length}/${config.risk.maxPositions}) — triggering screening in background`);
-        runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+      // Also trigger screening if under max — skipped in LLM saver (screening cron only)
+      if (!LLM_SAVER) {
+        const screeningCooldownMs = 5 * 60 * 1000;
+        if (positions.length < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
+          _screeningLastTriggered = Date.now();
+          log("cron", `Positions (${positions.length}/${config.risk.maxPositions}) — triggering screening in background`);
+          runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
+        }
       }
 
       // Snapshot + PnL fetch in parallel for all positions
@@ -373,7 +385,18 @@ export function startCronJobs() {
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
 
-  const healthTask = cron.schedule(`0 * * * *`, async () => {
+  const healthMin = Math.max(15, Math.floor(config.schedule.healthCheckIntervalMin ?? 60));
+  const healthCron =
+    healthMin < 60
+      ? `*/${healthMin} * * * *`
+      : (() => {
+          const h = healthMin / 60;
+          if (!Number.isInteger(h) || h > 24) return `0 * * * *`;
+          if (h === 1) return `0 * * * *`;
+          return `0 */${h} * * *`;
+        })();
+
+  const healthTask = cron.schedule(healthCron, async () => {
     if (_managementBusy) return;
     _managementBusy = true;
     log("cron", "Starting health check");
@@ -401,7 +424,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
   }, { timezone: 'UTC' });
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
+  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, health cron "${healthCron}" (${healthMin}m)`);
 }
 
 // ═══════════════════════════════════════════

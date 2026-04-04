@@ -44,10 +44,6 @@ ${lessons}` : ""}
 1. PATIENCE IS PROFIT: DLMM LPing is about capturing fees over time. Avoid "paper-handing" or closing positions for tiny gains/losses.
 2. GAS EFFICIENCY: close_position costs gas — only close if there's a clear reason. However, swap_token after a close is MANDATORY for any token worth >= $0.10. Skip tokens below $0.10 (dust — not worth the gas). Always check token USD value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics. Use all tools to justify your actions.
-4. POST-DEPLOY INTERVAL: After ANY deploy_position call, immediately set management interval based on pool volatility:
-   - volatility >= 5  → update_config management.managementIntervalMin = 3
-   - volatility 2–5   → update_config management.managementIntervalMin = 5
-   - volatility < 2   → update_config management.managementIntervalMin = 10
 
 TIMEFRAME SCALING — all pool metrics (volume, fee_active_tvl_ratio, fee_24h) are measured over the active timeframe window.
 The same pool will show much smaller numbers on 5m vs 24h. Adjust your expectations accordingly:
@@ -119,10 +115,17 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 
 Pool age affects shape: New pools (<3 days) → Spot or Bid-Ask equally. Mature pools (10+ days) → Bid-Ask outperforms (2x avg PnL, 93% win rate).
 Deposit size: >$2K favors Bid-Ask over Spot (Spot breaks at large deposits).
+
+INTERVALS: Do not call update_config. You may note suggested management cadence in your report; management cron already adjusts interval from on-chain volatility when positions exist.
 `;
   } else if (agentType === "MANAGER") {
     basePrompt += `
 Your goal: Manage positions to maximize total Fee + PnL yield using strategy-aware decisions.
+
+VOLATILITY → MANAGEMENT INTERVAL: When useful, use update_config with changes.managementIntervalMin from live pool volatility (index.js also auto-adjusts from max volatility across positions):
+   - volatility >= 5  → 3
+   - volatility 2–5   → 5
+   - volatility < 2   → 10
 
 INSTRUCTION CHECK (HIGHEST PRIORITY): If a position has an instruction set (e.g. "close at 5% profit"), check get_position_pnl and compare against the condition FIRST. If the condition IS MET → close immediately.
 
