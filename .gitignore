@@ -26,6 +26,9 @@ logs/
 # Dev context
 context.md
 
+# Docker bind mount (persistent agent state)
+meridian-data/
+
 # Discord listener queue
 discord-signals.json
 

@@ -21,13 +21,11 @@
  */
 
 import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import { dataPath } from "./data-path.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
-const LESSONS_FILE = path.join(__dirname, "lessons.json");
-const POOL_MEMORY_FILE = path.join(__dirname, "pool-memory.json");
+const USER_CONFIG_PATH = dataPath("user-config.json");
+const LESSONS_FILE = dataPath("lessons.json");
+const POOL_MEMORY_FILE = dataPath("pool-memory.json");
 
 const SYNC_DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
 const GET_TIMEOUT_MS = 5_000;

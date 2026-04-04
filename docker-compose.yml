@@ -1,0 +1,24 @@
+# Meridian — cap: 1 CPU, 2 GiB RAM (tune under deploy.resources.limits).
+# Copy .env next to this file, then: docker compose up -d --build
+
+services:
+  meridian:
+    build: .
+    container_name: meridian
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MERIDIAN_DATA_DIR: /data
+    volumes:
+      # Host folder — put user-config.json here (copy from user-config.example.json)
+      - ./meridian-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+

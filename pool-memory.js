@@ -7,8 +7,9 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { dataPath } from "./data-path.js";
 
-const POOL_MEMORY_FILE = "./pool-memory.json";
+const POOL_MEMORY_FILE = dataPath("pool-memory.json");
 
 function load() {
   if (!fs.existsSync(POOL_MEMORY_FILE)) return {};

@@ -60,6 +60,22 @@ npm install
 
 Replace `YOUR_USERNAME` with your GitHub username (or use your fork URL).
 
+### Docker (optional)
+
+Runs the agent in a container capped at **1 CPU** and **2 GB RAM** (see `docker-compose.yml` → `deploy.resources`).
+
+```bash
+cp .env.example .env   # fill in keys
+mkdir -p meridian-data
+cp user-config.example.json meridian-data/user-config.json   # optional; edit to taste
+docker compose build
+npm run docker:test    # quick smoke: loads config inside the image
+docker compose up -d --build
+docker compose logs -f meridian
+```
+
+State, logs, `user-config.json`, and JSON stores live under `./meridian-data` (mounted at `/data`). Requires Docker Compose **v2.24+** for resource limits to apply with `docker compose up`; otherwise run `docker update --cpus=1 --memory=2g meridian` after start.
+
 ### 2. Run the setup wizard
 
 ```bash

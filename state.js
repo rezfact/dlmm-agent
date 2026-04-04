@@ -10,8 +10,9 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
+import { dataPath } from "./data-path.js";
 
-const STATE_FILE = "./state.json";
+const STATE_FILE = dataPath("state.json");
 
 const MAX_RECENT_EVENTS = 20;
 
