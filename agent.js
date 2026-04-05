@@ -225,17 +225,26 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
 
       // If the model didn't call any tools, it's done
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        // Hermes sometimes returns null content — pop the empty message and retry once
+        // Hermes / free OpenRouter models often return null content — do not burn maxSteps on retries
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
+          emptyStreak++;
+          if (emptyStreak > 24) {
+            throw new Error(
+              "Too many empty LLM responses in a row — provider/model issue. Use a paid OpenRouter model or try again later."
+            );
+          }
           log("agent", "Empty response, retrying...");
+          step--;
           continue;
         }
+        emptyStreak = 0;
         log("agent", "Final answer reached");
         log("agent", msg.content);
         return { content: msg.content, userMessage: goal };
       }
 
+      emptyStreak = 0;
       // Execute each tool call in parallel
       const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
         const functionName = toolCall.function.name;
@@ -261,10 +270,11 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
     } catch (error) {
       log("error", `Agent loop error at step ${step}: ${error.message}`);
 
-      // If it's a rate limit, wait and retry
+      // If it's a rate limit, wait and retry (don't consume a step)
       if (error.status === 429) {
         log("agent", "Rate limited, waiting 30s...");
         await sleep(30000);
+        step--;
         continue;
       }
 

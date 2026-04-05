@@ -239,7 +239,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("cron", "Screening skipped — another agent run is still in progress (e.g. startup check)");
       return;
     }
-
+    // Claim immediately so management cron + screening cron cannot both enter during pre-check awaits
+    _screeningBusy = true;
+    let screenReport = null;
+    try {
     // Hard guards — don't even run the agent if preconditions aren't met
     let prePositions, preBalance;
     try {
@@ -258,13 +261,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return;
     }
 
-    _screeningBusy = true;
     timers.screeningLastRun = Date.now();
     log(
       "cron",
       `Starting screening cycle [model: ${config.llm.screeningModel}, maxSteps: ${config.llm.screeningMaxSteps}]`
     );
-    let screenReport = null;
     try {
       // Reuse pre-fetched balance — no extra RPC call needed
       const currentBalance = preBalance;
@@ -382,6 +383,7 @@ STEPS:
     } catch (error) {
       log("cron_error", `Screening cycle failed: ${error.message}`);
       screenReport = `Screening cycle failed: ${error.message}`;
+    }
     } finally {
       _screeningBusy = false;
       if (!silent && telegramEnabled()) {
