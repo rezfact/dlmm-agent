@@ -30,6 +30,7 @@
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 180,
   "maxSteps": 20,
+  "screeningMaxSteps": 36,
   "temperature": 0.3,
   "dryRun": false,
   "telegramChatId": "",

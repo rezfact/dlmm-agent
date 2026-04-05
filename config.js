@@ -89,6 +89,9 @@ export const config = {
     temperature: u.temperature ?? 0.373,
     maxTokens:   u.maxTokens   ?? 4096,
     maxSteps:    u.maxSteps    ?? 20,
+    /** Screening often needs more turns (tools + flaky free models); floor above maxSteps unless overridden. */
+    screeningMaxSteps:
+      u.screeningMaxSteps ?? Math.max(u.maxSteps ?? 20, 32),
     // Hybrid: premium (Anthropic via LLM_BASE_URL) for manager; budget (OpenRouter) for screener + chat
     managementModel:
       u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",

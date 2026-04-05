@@ -260,7 +260,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     _screeningBusy = true;
     timers.screeningLastRun = Date.now();
-    log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+    log(
+      "cron",
+      `Starting screening cycle [model: ${config.llm.screeningModel}, maxSteps: ${config.llm.screeningMaxSteps}]`
+    );
     let screenReport = null;
     try {
       // Reuse pre-fetched balance — no extra RPC call needed
@@ -355,6 +358,8 @@ ${config.screening.blockedLaunchpads.length ? `- HARD SKIP if launchpad is any o
 - Bots 5–25% are normal, not a skip reason on their own
 - Smart wallets present → strong confidence boost
 
+EFFICIENCY (critical): PRE-LOADED block already has metrics, narrative, smart wallets, audit. Pick the best pool from that list only. Do NOT call get_top_candidates, get_token_holders, get_token_narrative, check_smart_wallets_on_pool, get_pool_detail, get_pool_memory, list_strategies, or get_strategy unless something essential is literally missing — one deploy_position then your text report.
+
 STEPS:
 1. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
@@ -366,7 +371,13 @@ STEPS:
    smart_wallets=name1,name2 (or none)
    narrative: <one sentence>
    reason: <one sentence why picked over others>
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048);
+      `,
+        config.llm.screeningMaxSteps,
+        [],
+        "SCREENER",
+        config.llm.screeningModel,
+        Math.max(2048, config.llm.maxTokens)
+      );
       screenReport = content;
     } catch (error) {
       log("cron_error", `Screening cycle failed: ${error.message}`);
