@@ -371,6 +371,7 @@ STEPS:
 1. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(35 + (volatility/5)*55) clamped to [35,90].
+   DEPLOY SIZE: For SOL-only LP use amount_y = ${deployAmount} SOL exactly, amount_x = 0. If swap_token fails, still use amount_y = ${deployAmount} (never 0.36 or other partial SOL when minimum is ${config.management.deployAmountSol}).
 3. Report in this exact format (no tables, no extra sections):
    Deployed: PAIR
    bin_step=X | fee=X% | bots=X% | top10=X% | fees=XSOL
@@ -889,9 +890,18 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => {});
   (async () => {
     try {
+      let startupDeploy = DEPLOY;
+      try {
+        const w = await getWalletBalances();
+        if (w.sol != null) startupDeploy = computeDeployAmount(w.sol);
+      } catch { /* use DEPLOY floor */ }
       await agentLoop(`
 STARTUP CHECK
-1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL. 4. Report.
+Precomputed deploy: ${startupDeploy} SOL (use amount_y=${startupDeploy} for SOL-only; amount_x=0). Executor rejects SOL-only amount_y below ${config.management.deployAmountSol}.
+If swap_token fails, redeploy SOL-only with amount_y=${startupDeploy} — do not use a partial SOL amount.
+Without JUPITER_API_KEY, skip swap_token; use bid_ask SOL-only only.
+
+1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy. 4. Report.
       `, config.llm.maxSteps, [], "SCREENER");
     } catch (e) {
       log("startup_error", e.message);

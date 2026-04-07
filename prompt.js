@@ -110,6 +110,9 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driv
 10. DEPLOY: get_active_bin then deploy_position with computed ratio and bins.
    - HARD RULE: Bin steps must be [80-125].
    - COMPOUNDING: Deploy amount computed from wallet size. Use the amount provided in the cycle goal.
+   - EXECUTOR MINIMUM SOL: For SOL-only deploy (amount_x=0), amount_y MUST be >= management.deployAmountSol. Never pass a partial SOL leg (e.g. "80% of total") as amount_y alone — that will be rejected.
+   - custom_ratio_spot: If you use BOTH amount_x > 0 AND amount_y > 0 (dual-sided), the minimum-SOL floor is skipped. If swap_token fails or returns error, you MUST fall back to SOL-only: amount_x=0, amount_y = FULL cycle deploy amount (same number as in the screening/startup message), not a fraction of it.
+   - If JUPITER_API_KEY may be missing or swaps unreliable, prefer bid_ask SOL-only (amount_x=0) to avoid blocking the whole deploy.
    - Focus on one high-conviction deployment per cycle.
    - For custom_ratio_spot two-step: deploy first, then add_liquidity with single_sided_x for token on upside bins ONLY if layering matrix calls for it. Layering is OPTIONAL.
 
