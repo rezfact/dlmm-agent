@@ -890,19 +890,11 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => {});
   (async () => {
     try {
-      let startupDeploy = DEPLOY;
-      try {
-        const w = await getWalletBalances();
-        if (w.sol != null) startupDeploy = computeDeployAmount(w.sol);
-      } catch { /* use DEPLOY floor */ }
-      await agentLoop(`
-STARTUP CHECK
-Precomputed deploy: ${startupDeploy} SOL (use amount_y=${startupDeploy} for SOL-only; amount_x=0). Executor rejects SOL-only amount_y below ${config.management.deployAmountSol}.
-If swap_token fails, redeploy SOL-only with amount_y=${startupDeploy} — do not use a partial SOL amount.
-Without JUPITER_API_KEY, skip swap_token; use bid_ask SOL-only only.
-
-1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy. 4. Report.
-      `, config.llm.maxSteps, [], "SCREENER");
+      // Use the same path as the screening cron (pre-loaded candidates, tight prompt).
+      // A generic SCREENER agentLoop here follows prompt.js and burns 10–20+ minutes of tools
+      // while holding isAgentLoopRunning — scheduled screening then skips ("startup check").
+      log("startup", "Running initial screening cycle (non-TTY)");
+      await runScreeningCycle({ silent: false });
     } catch (e) {
       log("startup_error", e.message);
     }
