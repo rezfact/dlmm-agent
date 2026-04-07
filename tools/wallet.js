@@ -162,8 +162,9 @@ export async function swapToken({
     });
     if (!orderRes.ok) {
       const body = await orderRes.text();
-      if (orderRes.status === 500) {
-        log("swap", `Ultra failed for ${input_mint}, falling back to regular swap API`);
+      // 401/403 = bad/missing API key for Ultra; 500 = transient — try legacy swap API
+      if (orderRes.status === 500 || orderRes.status === 401 || orderRes.status === 403) {
+        log("swap", `Ultra order ${orderRes.status} for ${input_mint}, falling back to swap/v1`);
         return await swapViaQuoteApi({ wallet, connection, input_mint, output_mint, amountStr });
       }
       throw new Error(`Ultra order failed: ${orderRes.status} ${body}`);

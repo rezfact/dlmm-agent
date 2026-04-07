@@ -20,6 +20,12 @@ import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+if (process.env.DRY_RUN !== "true" && !(process.env.JUPITER_API_KEY || "").trim()) {
+  log(
+    "startup_warn",
+    "JUPITER_API_KEY is unset — swap_token (and pre-deploy token buys) will fail. Set it in .env and pass into Docker."
+  );
+}
 
 /** Fewer LLM calls: no screening fired from management cron (only the screening schedule runs). */
 const LLM_SAVER = process.env.MERIDIAN_LLM_SAVER === "true" || process.env.MERIDIAN_LLM_SAVER === "1";
