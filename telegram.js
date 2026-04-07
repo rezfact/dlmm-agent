@@ -151,13 +151,15 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   const poolStr = (binStep || baseFee)
     ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
     : "";
+  const posShort = position ? `${position.slice(0, 8)}…` : "—";
+  const txShort = tx ? `${tx.slice(0, 16)}…` : "—";
   await sendHTML(
     `✅ <b>Deployed</b> ${pair}\n` +
     `Amount: ${amountSol} SOL\n` +
     priceStr +
     poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `Position: <code>${posShort}</code>\n` +
+    `Tx: <code>${txShort}</code>`
   );
 }
 
