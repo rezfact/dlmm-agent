@@ -166,8 +166,14 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
   }
 
   let emptyStreak = 0;
+  const EMPTY_LOG_EVERY = 6;
+  const EMPTY_FAIL_AFTER = 24;
   for (let step = 0; step < maxSteps; step++) {
-    log("agent", `Step ${step + 1}/${maxSteps}`);
+    // After empty LLM replies we step-- and continue; `step` stays the same, so without this
+    // we'd spam "Step 1/32" on every retry.
+    if (emptyStreak === 0) {
+      log("agent", `Step ${step + 1}/${maxSteps}`);
+    }
 
     try {
       let usedModel = primaryModel;
@@ -229,12 +235,22 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
           emptyStreak++;
-          if (emptyStreak > 24) {
+          if (emptyStreak > EMPTY_FAIL_AFTER) {
             throw new Error(
               "Too many empty LLM responses in a row — provider/model issue. Use a paid OpenRouter model or try again later."
             );
           }
-          log("agent", "Empty response, retrying...");
+          // Avoid log flooding on flaky free models (same step retried many times)
+          if (
+            emptyStreak <= 2 ||
+            emptyStreak % EMPTY_LOG_EVERY === 0 ||
+            emptyStreak >= EMPTY_FAIL_AFTER - 2
+          ) {
+            log(
+              "agent",
+              `Empty LLM response (${emptyStreak}/${EMPTY_FAIL_AFTER}), retrying step ${step + 1}/${maxSteps}...`
+            );
+          }
           step--;
           continue;
         }
