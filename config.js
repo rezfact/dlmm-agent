@@ -26,7 +26,7 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 const LLM_HYBRID =
   process.env.LLM_HYBRID === "true" || process.env.LLM_HYBRID === "1";
 const LLM_BUDGET_MODEL_DEFAULT =
-  process.env.LLM_BUDGET_MODEL || "stepfun/step-3.5-flash:free";
+  process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free";
 
 export const config = {
   // ─── Risk Limits ─────────────────────────

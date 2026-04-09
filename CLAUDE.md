@@ -178,7 +178,7 @@ const actualBaseFee = baseFactor > 0
 ## Model Configuration
 
 - Default model: `process.env.LLM_MODEL` or `openrouter/healer-alpha`
-- Fallback on 502/503/529: `stepfun/step-3.5-flash:free` (2nd attempt), then retry
+- Fallback on 502/503/529: `arcee-ai/trinity-large-preview:free` (2nd attempt), then retry
 - Per-role models: `managementModel`, `screeningModel`, `generalModel` in user-config.json
 - LM Studio: set `LLM_BASE_URL=http://localhost:1234/v1` and `LLM_API_KEY=lm-studio`
 - `maxOutputTokens` minimum: 2048 (free models may have lower limits causing empty responses)

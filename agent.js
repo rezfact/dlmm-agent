@@ -28,7 +28,7 @@ export function isAgentLoopRunning() {
 function isTransientLlmError(err) {
   const msg = (err?.message || String(err)).toLowerCase();
   return (
-    /unexpected end of json|invalid json|econnreset|etimedout|socket hang up|fetch failed|network|aborted/.test(
+    /unexpected end of json|invalid json|econnreset|etimedout|socket hang up|fetch failed|network|aborted|premature close/.test(
       msg
     ) || err?.code === "ECONNRESET"
   );
@@ -77,7 +77,7 @@ if (LLM_HYBRID && !budget) {
 const DEFAULT_MODEL =
   process.env.LLM_MODEL ||
   (premium.isAnthropic ? "claude-haiku-4-5" : "openrouter/healer-alpha");
-const BUDGET_FALLBACK = "stepfun/step-3.5-flash:free";
+const BUDGET_FALLBACK = "arcee-ai/trinity-large-preview:free";
 const PREMIUM_FALLBACK = premium.isAnthropic
   ? "claude-haiku-4-5"
   : BUDGET_FALLBACK;

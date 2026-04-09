@@ -61,6 +61,19 @@ function getWallet() {
   return _wallet;
 }
 
+/** Solana rejects txs whose recent blockhash is too old; slow RPC/network causes this. Must rebuild tx, not resend same object. */
+function isBlockhashExpiredError(err) {
+  const m = (err?.message || String(err)).toLowerCase();
+  return (
+    m.includes("block height exceeded") ||
+    m.includes("blockheight exceeded") ||
+    m.includes("transactionexpiredblockheightexceeded")
+  );
+}
+
+const BLOCKHASH_RETRY_ATTEMPTS = 3;
+const BLOCKHASH_RETRY_DELAY_MS = 600;
+
 // ─── Pool Cache ────────────────────────────────────────────────
 const poolCache = new Map();
 
@@ -584,26 +597,40 @@ export async function closePosition({ position_address }) {
     const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     // Clear cached pool so SDK loads fresh position fee state
     poolCache.delete(poolAddress.toString());
-    const pool = await getPool(poolAddress);
+    let pool = await getPool(poolAddress);
 
     const positionPubKey = new PublicKey(position_address);
 
     const txHashes = [];
+    const conn = getConnection();
 
     // ─── Step 1: Claim Fees (to clear account state) ───────────
     try {
       log("close", `Step 1: Claiming fees for ${position_address}`);
-      const positionData = await pool.getPosition(positionPubKey);
-      const claimTxs = await pool.claimSwapFee({
-        owner: wallet.publicKey,
-        position: positionData,
-      });
-      if (claimTxs && claimTxs.length > 0) {
-        for (const tx of claimTxs) {
-          const claimHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet], { skipPreflight: true });
-          txHashes.push(claimHash);
+      let claimDone = false;
+      for (let attempt = 1; attempt <= BLOCKHASH_RETRY_ATTEMPTS && !claimDone; attempt++) {
+        try {
+          const positionData = await pool.getPosition(positionPubKey);
+          const claimTxs = await pool.claimSwapFee({
+            owner: wallet.publicKey,
+            position: positionData,
+          });
+          if (claimTxs && claimTxs.length > 0) {
+            for (const tx of claimTxs) {
+              const claimHash = await sendAndConfirmTransaction(conn, tx, [wallet], { skipPreflight: true });
+              txHashes.push(claimHash);
+            }
+            log("close", `Step 1 OK: ${txHashes.join(", ")}`);
+          }
+          claimDone = true;
+        } catch (e) {
+          if (isBlockhashExpiredError(e) && attempt < BLOCKHASH_RETRY_ATTEMPTS) {
+            log("close", `Step 1: blockhash expired, retry ${attempt + 1}/${BLOCKHASH_RETRY_ATTEMPTS}...`);
+            await new Promise((r) => setTimeout(r, BLOCKHASH_RETRY_DELAY_MS));
+          } else {
+            throw e;
+          }
         }
-        log("close", `Step 1 OK: ${txHashes.join(", ")}`);
       }
     } catch (e) {
       log("close_warn", `Step 1 (Claim) failed or nothing to claim: ${e.message}`);
@@ -611,20 +638,33 @@ export async function closePosition({ position_address }) {
 
     // ─── Step 2: Remove Liquidity & Close ──────────────────────
     log("close", `Step 2: Removing liquidity and closing account`);
-    const closeTx = await pool.removeLiquidity({
-      user: wallet.publicKey,
-      position: positionPubKey,
-      fromBinId: -887272,
-      toBinId: 887272,
-      bps: new BN(10000),
-      shouldClaimAndClose: true,
-    });
-
-    for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet], { skipPreflight: true });
-      txHashes.push(txHash);
+    for (let attempt = 1; attempt <= BLOCKHASH_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const closeTx = await pool.removeLiquidity({
+          user: wallet.publicKey,
+          position: positionPubKey,
+          fromBinId: -887272,
+          toBinId: 887272,
+          bps: new BN(10000),
+          shouldClaimAndClose: true,
+        });
+        for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
+          const txHash = await sendAndConfirmTransaction(conn, tx, [wallet], { skipPreflight: true });
+          txHashes.push(txHash);
+        }
+        log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
+        break;
+      } catch (e) {
+        if (isBlockhashExpiredError(e) && attempt < BLOCKHASH_RETRY_ATTEMPTS) {
+          log("close", `Step 2: blockhash expired, retry ${attempt + 1}/${BLOCKHASH_RETRY_ATTEMPTS}...`);
+          poolCache.delete(poolAddress.toString());
+          pool = await getPool(poolAddress);
+          await new Promise((r) => setTimeout(r, BLOCKHASH_RETRY_DELAY_MS));
+        } else {
+          throw e;
+        }
+      }
     }
-    log("close", `SUCCESS txs: ${txHashes.join(", ")}`);
     // Wait for RPC to reflect withdrawn balances before returning — prevents
     // agent from seeing zero balance when attempting post-close swap
     await new Promise(r => setTimeout(r, 5000));
