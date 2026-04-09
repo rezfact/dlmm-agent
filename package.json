@@ -14,6 +14,7 @@
     "test:screen": "node test/test-screening.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",
     "test:smoke": "node test/test-screening.js && DRY_RUN=true node test/test-agent.js",
+    "test:ollama": "node scripts/ollama-meridian-smoke.js",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
