@@ -1,5 +1,7 @@
 # Meridian — cap: 1 CPU, 2 GiB RAM (tune under deploy.resources.limits).
 # Copy .env next to this file, then: docker compose up -d --build
+#
+# Ollama in Docker: see `networks.llm` at bottom — or `docker network connect` (see .env.example).
 
 services:
   meridian:
@@ -24,4 +26,13 @@ services:
         reservations:
           cpus: "0.25"
           memory: 512M
+    # Uncomment when using the `networks.llm` block above:
+    # networks:
+    #   - default
+    #   - llm
+
+# networks:
+#   llm:
+#     external: true
+#     name: ollama_default
 
