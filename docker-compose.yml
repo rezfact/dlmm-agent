@@ -13,6 +13,9 @@ services:
     volumes:
       # Host folder — put user-config.json here (copy from user-config.example.json)
       - ./meridian-data:/data
+    # So LLM_BASE_URL=http://host.docker.internal:11434/v1 can reach Ollama on the Docker host (Linux).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
