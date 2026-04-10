@@ -1,0 +1,40 @@
+# Local smoke: Meridian container → Ollama on same Docker network.
+# First-time `docker compose pull ollama` downloads a large image (~3GB layer) — be patient.
+#
+# Usage (from repo root):
+#   npm run test:docker-ollama
+#   (uses project name meridian-ollama-smoke — see scripts/docker-ollama-smoke.sh)
+#
+# Lighter option — Ollama already on your Mac/Linux host :11434, only rebuild Meridian:
+#   npm run test:docker-ollama-host
+#
+# Stop isolated stack: docker compose -p meridian-ollama-smoke -f docker-compose.ollama-smoke.yml down
+
+networks:
+  ollama_smoke:
+    driver: bridge
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: meridian-ollama-smoke
+    networks: [ollama_smoke]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_smoke_data:/root/.ollama
+
+  meridian-smoke:
+    build: .
+    networks: [ollama_smoke]
+    depends_on:
+      - ollama
+    environment:
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_API_KEY: ollama
+      LLM_MODEL: qwen2.5:3b
+      MERIDIAN_CAVEMAN: "1"
+    command: ["npm", "run", "test:ollama"]
+
+volumes:
+  ollama_smoke_data:

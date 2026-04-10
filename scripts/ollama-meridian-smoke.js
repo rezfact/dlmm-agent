@@ -4,8 +4,11 @@
  * On the host (Ollama on localhost:11434):
  *   LLM_BASE_URL=http://127.0.0.1:11434/v1 npm run test:ollama
  *
- * Meridian in Docker (Ollama on host, published -p 11434; .env uses host.docker.internal):
- *   docker compose run --rm meridian npm run test:ollama
+ * Meridian in Docker (Ollama on host :11434):
+ *   npm run test:docker-ollama-host
+ *
+ * Fully isolated Ollama in Docker (large image pull first):
+ *   npm run test:docker-ollama
  */
 
 import "dotenv/config";
