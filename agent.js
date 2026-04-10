@@ -15,7 +15,7 @@ function getToolsForRole(agentType) {
 import { getWalletBalances } from "./tools/wallet.js";
 import { getMyPositions } from "./tools/dlmm.js";
 import { log } from "./logger.js";
-import { config } from "./config.js";
+import { config, LLM_LOCAL_DEFAULT_MODEL } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
@@ -52,6 +52,7 @@ const PREMIUM_API_KEY =
 
 function makeClient(baseURL, apiKey) {
   const isAnthropic = baseURL.includes("anthropic.com");
+  const openRouterCompat = /openrouter\.ai/i.test(baseURL);
   return {
     client: new OpenAI({
       baseURL,
@@ -60,6 +61,7 @@ function makeClient(baseURL, apiKey) {
       defaultHeaders: isAnthropic ? { "anthropic-version": "2023-06-01" } : {},
     }),
     isAnthropic,
+    openRouterCompat,
   };
 }
 
@@ -76,11 +78,16 @@ if (LLM_HYBRID && !budget) {
 
 const DEFAULT_MODEL =
   process.env.LLM_MODEL ||
-  (premium.isAnthropic ? "claude-haiku-4-5" : "openrouter/healer-alpha");
-const BUDGET_FALLBACK = "arcee-ai/trinity-large-preview:free";
+  (premium.isAnthropic
+    ? "claude-haiku-4-5"
+    : premium.openRouterCompat
+      ? "openrouter/healer-alpha"
+      : LLM_LOCAL_DEFAULT_MODEL);
 const PREMIUM_FALLBACK = premium.isAnthropic
   ? "claude-haiku-4-5"
-  : BUDGET_FALLBACK;
+  : premium.openRouterCompat
+    ? (process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free")
+    : LLM_LOCAL_DEFAULT_MODEL;
 
 function useBudgetForRole(agentType) {
   return (
@@ -92,7 +99,14 @@ function useBudgetForRole(agentType) {
 
 function pickClientAndFallback(agentType) {
   if (useBudgetForRole(agentType)) {
-    return { ...budget, fallbackModel: BUDGET_FALLBACK };
+    return {
+      ...budget,
+      fallbackModel: budget.isAnthropic
+        ? "claude-haiku-4-5"
+        : budget.openRouterCompat
+          ? (process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free")
+          : LLM_LOCAL_DEFAULT_MODEL,
+    };
   }
   return { ...premium, fallbackModel: PREMIUM_FALLBACK };
 }
@@ -104,12 +118,15 @@ function defaultModelForRole(agentType) {
   return config.llm.generalModel;
 }
 
-/** Anthropic-style model id on OpenRouter would 404 — remap to budget default (no log; caller logs once). */
+/** Claude-style ids only work on Anthropic/OpenRouter — remap so local endpoints do not 404. */
 function coerceModelForProvider(requestedModel, routing) {
   const m = requestedModel;
-  const onOpenRouter = !routing.isAnthropic;
-  if (onOpenRouter && m && !m.includes("/") && /^claude/i.test(m)) {
-    return process.env.LLM_BUDGET_MODEL || BUDGET_FALLBACK;
+  if (routing.isAnthropic) return m;
+  if (m && !m.includes("/") && /^claude/i.test(m)) {
+    if (routing.openRouterCompat) {
+      return process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free";
+    }
+    return process.env.LLM_MODEL || LLM_LOCAL_DEFAULT_MODEL;
   }
   return m;
 }
@@ -161,7 +178,7 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
   if (primaryModel !== rawModel) {
     log(
       "agent",
-      `Budget route: using "${primaryModel}" (model "${rawModel}" is not valid on OpenRouter)`
+      `Using "${primaryModel}" (remapped from "${rawModel}" for this LLM endpoint)`
     );
   }
 

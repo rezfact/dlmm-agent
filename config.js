@@ -25,8 +25,21 @@ if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 
 const LLM_HYBRID =
   process.env.LLM_HYBRID === "true" || process.env.LLM_HYBRID === "1";
+
+/** When LLM_BASE_URL is not OpenRouter (e.g. Ollama/LM Studio), use small local defaults unless overridden. */
+const LLM_BASE_URL_RAW = process.env.LLM_BASE_URL || "";
+const USE_OPENROUTER_DEFAULT =
+  !LLM_BASE_URL_RAW || /openrouter\.ai/i.test(LLM_BASE_URL_RAW);
+const LOCAL_DEFAULT_MODEL =
+  process.env.LLM_LOCAL_MODEL || "qwen2.5:3b";
+/** Default tag for Ollama (`ollama pull qwen2.5:3b`). Override with LLM_LOCAL_MODEL. */
+export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
+
 const LLM_BUDGET_MODEL_DEFAULT =
-  process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free";
+  process.env.LLM_BUDGET_MODEL
+  ?? (USE_OPENROUTER_DEFAULT
+    ? "arcee-ai/trinity-large-preview:free"
+    : LOCAL_DEFAULT_MODEL);
 
 export const config = {
   // ─── Risk Limits ─────────────────────────
@@ -92,17 +105,19 @@ export const config = {
     /** Screening often needs more turns (tools + flaky free models); floor above maxSteps unless overridden. */
     screeningMaxSteps:
       u.screeningMaxSteps ?? Math.max(u.maxSteps ?? 20, 32),
-    // Hybrid: premium (Anthropic via LLM_BASE_URL) for manager; budget (OpenRouter) for screener + chat
+    // Hybrid: premium (Anthropic / primary LLM_BASE_URL) for manager; budget endpoint for screener + chat
     managementModel:
-      u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+      u.managementModel
+      ?? process.env.LLM_MODEL
+      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/healer-alpha" : LOCAL_DEFAULT_MODEL),
     screeningModel:
       u.screeningModel
       ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
-      ?? "openrouter/hunter-alpha",
+      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/hunter-alpha" : LOCAL_DEFAULT_MODEL),
     generalModel:
       u.generalModel
       ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
-      ?? "openrouter/healer-alpha",
+      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/healer-alpha" : LOCAL_DEFAULT_MODEL),
   },
 
   // ─── Common Token Mints ────────────────

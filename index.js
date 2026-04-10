@@ -19,7 +19,10 @@ import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
-log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+log(
+  "startup",
+  `LLM: ${config.llm.managementModel} (manage) · ${config.llm.screeningModel} (screen) · ${config.llm.generalModel} (chat)`
+);
 if (process.env.DRY_RUN !== "true" && !(process.env.JUPITER_API_KEY || "").trim()) {
   log(
     "startup_warn",
