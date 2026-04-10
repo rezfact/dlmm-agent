@@ -520,6 +520,92 @@ function appendHistory(userMsg, assistantMsg) {
   }
 }
 
+/** Set when REPL exists (TTY); Telegram handler uses this to refresh the prompt after a reply. */
+let replInterface = null;
+
+async function handleTelegramLine(text) {
+  if (_managementBusy || _screeningBusy || busy) {
+    sendMessage("Agent is busy right now — try again in a moment.").catch(() => {});
+    return;
+  }
+
+  if (text === "/briefing") {
+    try {
+      const briefing = await generateBriefing();
+      await sendHTML(briefing);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/positions") {
+    try {
+      const { positions, total_positions } = await getMyPositions({ force: true });
+      if (total_positions === 0) { await sendMessage("No open positions."); return; }
+      const lines = positions.map((p, i) => {
+        const pnl = p.pnl_usd >= 0 ? `+$${p.pnl_usd}` : `-$${Math.abs(p.pnl_usd)}`;
+        const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+        const oor = !p.in_range ? " ⚠️OOR" : "";
+        return `${i + 1}. ${p.pair} | $${p.total_value_usd} | PnL: ${pnl} | fees: $${p.unclaimed_fees_usd} | ${age}${oor}`;
+      });
+      await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  const closeMatch = text.match(/^\/close\s+(\d+)$/i);
+  if (closeMatch) {
+    try {
+      const idx = parseInt(closeMatch[1]) - 1;
+      const { positions } = await getMyPositions({ force: true });
+      if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
+      const pos = positions[idx];
+      await sendMessage(`Closing ${pos.pair}...`);
+      const result = await closePosition({ position_address: pos.position });
+      if (result.success) {
+        await sendMessage(`✅ Closed ${pos.pair}\nPnL: $${result.pnl_usd ?? "?"} | txs: ${result.txs?.join(", ")}`);
+      } else {
+        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+      }
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
+  if (setMatch) {
+    try {
+      const idx = parseInt(setMatch[1]) - 1;
+      const note = setMatch[2].trim();
+      const { positions } = await getMyPositions({ force: true });
+      if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
+      const pos = positions[idx];
+      setPositionInstruction(pos.position, note);
+      await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  busy = true;
+  try {
+    log("telegram", `Incoming: ${text}`);
+    const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
+    const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
+    const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+    const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel);
+    appendHistory(text, content);
+    await sendMessage(content);
+  } catch (e) {
+    await sendMessage(`Error: ${e.message}`).catch(() => {});
+  } finally {
+    busy = false;
+    if (replInterface) {
+      replInterface.setPrompt(buildPrompt());
+      replInterface.prompt(true);
+    }
+  }
+}
+
 // Register restarter — when update_config changes intervals, running cron jobs get replaced
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
 
@@ -529,6 +615,7 @@ if (isTTY) {
     output: process.stdout,
     prompt: buildPrompt(),
   });
+  replInterface = rl;
 
   // Update prompt countdown every 10 seconds
   setInterval(() => {
@@ -605,87 +692,10 @@ if (isTTY) {
   launchCron();
   maybeRunMissedBriefing().catch(() => {});
 
-  // Telegram bot
-  startPolling(async (text) => {
-    if (_managementBusy || _screeningBusy || busy) {
-      sendMessage("Agent is busy right now — try again in a moment.").catch(() => {});
-      return;
-    }
-
-    if (text === "/briefing") {
-      try {
-        const briefing = await generateBriefing();
-        await sendHTML(briefing);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/positions") {
-      try {
-        const { positions, total_positions } = await getMyPositions({ force: true });
-        if (total_positions === 0) { await sendMessage("No open positions."); return; }
-        const lines = positions.map((p, i) => {
-          const pnl = p.pnl_usd >= 0 ? `+$${p.pnl_usd}` : `-$${Math.abs(p.pnl_usd)}`;
-          const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
-          const oor = !p.in_range ? " ⚠️OOR" : "";
-          return `${i + 1}. ${p.pair} | $${p.total_value_usd} | PnL: ${pnl} | fees: $${p.unclaimed_fees_usd} | ${age}${oor}`;
-        });
-        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-
-    const closeMatch = text.match(/^\/close\s+(\d+)$/i);
-    if (closeMatch) {
-      try {
-        const idx = parseInt(closeMatch[1]) - 1;
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        await sendMessage(`Closing ${pos.pair}...`);
-        const result = await closePosition({ position_address: pos.position });
-        if (result.success) {
-          await sendMessage(`✅ Closed ${pos.pair}\nPnL: $${result.pnl_usd ?? "?"} | txs: ${result.txs?.join(", ")}`);
-        } else {
-          await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
-        }
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-
-    const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
-    if (setMatch) {
-      try {
-        const idx = parseInt(setMatch[1]) - 1;
-        const note = setMatch[2].trim();
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        setPositionInstruction(pos.position, note);
-        await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-
-    busy = true;
-    try {
-      log("telegram", `Incoming: ${text}`);
-      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
-      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
-      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, config.llm.generalModel);
-      appendHistory(text, content);
-      await sendMessage(content);
-    } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
-    } finally {
-      busy = false;
-      rl.setPrompt(buildPrompt());
-      rl.prompt(true);
-    }
-  });
+  // Telegram bot (shared handler with non-TTY / Docker)
+  if (telegramEnabled()) {
+    startPolling(handleTelegramLine);
+  }
 
   console.log(`
 Commands:
@@ -899,6 +909,10 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => {});
+  if (telegramEnabled()) {
+    startPolling(handleTelegramLine);
+    log("startup", "Telegram bot polling started (non-TTY / Docker)");
+  }
   (async () => {
     try {
       // Use the same path as the screening cron (pre-loaded candidates, tight prompt).
