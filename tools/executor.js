@@ -168,6 +168,7 @@ const toolMap = {
       managementModel: ["llm", "managementModel"],
       screeningModel: ["llm", "screeningModel"],
       generalModel: ["llm", "generalModel"],
+      terseCaveman: ["llm", "terseCaveman"],
       // strategy
       minBinStep: ["strategy", "minBinStep"],
       binsBelow: ["strategy", "binsBelow"],

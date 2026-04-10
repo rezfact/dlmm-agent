@@ -9,7 +9,19 @@
  * @param {Object} perfSummary - Performance summary
  * @returns {string} - Complete system prompt
  */
-import { config } from "./config.js";
+import { config, isTerseCavemanLive } from "./config.js";
+
+/** Extra instructions when MERIDIAN_CAVEMAN / terse mode is on (local LLM only). */
+function localTerseCavemanBlock() {
+  if (!isTerseCavemanLive()) return "";
+  return `
+
+TERSE MODE (few-token style; inspired by github.com/JuliusBrussee/caveman — stay technically correct):
+- No greeting, no recap, no “Let me know”.
+- Short clauses; bullets OK. Tool JSON: only required keys.
+- Final reply after tools: ≤12 lines unless a required report format needs more.
+`;
+}
 
 /** One-line state for Ollama/small context — avoids 9k+ token prompts that Ollama truncates at 4096. */
 function compactState(portfolio, positions, stateSummary, perfSummary, lessons) {
@@ -38,6 +50,8 @@ ${lessonBlock ? `LESSONS:\n${lessonBlock}\n` : ""}`;
 
 function buildLocalSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary) {
   const core = compactState(portfolio, positions, stateSummary, perfSummary, lessons);
+  const terse = localTerseCavemanBlock();
+  const ts = `Timestamp: ${new Date().toISOString()}`;
 
   if (agentType === "SCREENER") {
     return `${core}
@@ -46,8 +60,8 @@ The user message includes PRE-LOADED CANDIDATE ANALYSIS — token checks and sma
 
 Flow (≤4 tool rounds): (1) list_strategies → get_strategy for active (2) get_pool_memory for chosen pool (3) get_wallet_balance (4) get_pool_detail if you need volatility/trend → get_active_bin → deploy_position. Use swap_token/add_liquidity only if the strategy needs token legs.
 SOL-only deploy: amount_x=0, amount_y = full deploy SOL from the user message. Bin steps [${config.screening.minBinStep}-${config.screening.maxBinStep}]. One deploy per cycle.
-
-Timestamp: ${new Date().toISOString()}
+${terse}
+${ts}
 `;
   }
 
@@ -56,14 +70,16 @@ Timestamp: ${new Date().toISOString()}
 ROLE: MANAGER (LOCAL)
 Use tools to manage open positions. Priority: position instructions → get_position_pnl / get_pool_detail / get_active_bin → close_position or claim_fees / add_liquidity / withdraw_liquidity per active strategy. After close: swap_token dust ≥$0.10 to SOL.
 Cron reports go to Telegram: state what you did in plain facts — never ask the operator questions.
-Timestamp: ${new Date().toISOString()}
+${terse}
+${ts}
 `;
   }
 
   return `${core}
 ROLE: GENERAL (LOCAL)
 Execute the user request with tools; be concise. After close_position, swap recoverable tokens to SOL unless user said otherwise.
-Timestamp: ${new Date().toISOString()}
+${terse}
+${ts}
 `;
 }
 

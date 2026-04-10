@@ -42,6 +42,32 @@ export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
  */
 export const LLM_IS_LOCAL_ENDPOINT = !USE_OPENROUTER_DEFAULT;
 
+/** MERIDIAN_CAVEMAN / LLM_TERSE / user-config terseCaveman — only applies to local endpoints (Ollama, LM Studio). */
+function envTriState(name) {
+  const v = process.env[name];
+  if (v === undefined || v === null || String(v).trim() === "") return null;
+  const s = String(v).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(s)) return true;
+  if (["0", "false", "no", "off"].includes(s)) return false;
+  return null;
+}
+
+/**
+ * Short, low-filler replies for small local models (token + CPU savings).
+ * Inspired by github.com/JuliusBrussee/caveman — implemented here in prompts, not in Ollama.
+ * Default ON for local; disable with MERIDIAN_CAVEMAN=0 or terseCaveman: false in user-config.json.
+ */
+function computeTerseCaveman() {
+  if (!LLM_IS_LOCAL_ENDPOINT) return false;
+  const a = envTriState("MERIDIAN_CAVEMAN");
+  if (a !== null) return a;
+  const b = envTriState("LLM_TERSE");
+  if (b !== null) return b;
+  if (u.terseCaveman === true || u.terseCaveman === "true") return true;
+  if (u.terseCaveman === false || u.terseCaveman === "false") return false;
+  return true;
+}
+
 const LOCAL_MAX_STEPS =
   parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) || 10;
 const LOCAL_SCREENING_MAX_STEPS =
@@ -137,6 +163,8 @@ export const config = {
     screeningCandidateLimit: u.screeningCandidateLimit ?? SCREENING_CANDIDATE_LIMIT,
     /** Set when using Ollama/LM Studio — index.js shortens narrative preloads. */
     isLocalEndpoint: LLM_IS_LOCAL_ENDPOINT,
+    /** Prompt suffix: minimal filler, short final replies (local LLM only). */
+    terseCaveman: computeTerseCaveman(),
     // Hybrid: premium (Anthropic / primary LLM_BASE_URL) for manager; budget endpoint for screener + chat
     managementModel:
       u.managementModel
@@ -159,6 +187,15 @@ export const config = {
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
   },
 };
+
+/** Runtime terse mode (after update_config, value may be string). */
+export function isTerseCavemanLive() {
+  if (!config.llm.isLocalEndpoint) return false;
+  const t = config.llm.terseCaveman;
+  if (t === false || t === "false" || t === 0 || t === "0") return false;
+  if (t === true || t === "true" || t === 1 || t === "1") return true;
+  return true;
+}
 
 /**
  * Compute the optimal deploy amount for a given wallet balance.

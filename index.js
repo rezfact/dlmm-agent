@@ -6,7 +6,7 @@ import { log } from "./logger.js";
 import { getMyPositions, getPositionPnl, closePosition } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, isTerseCavemanLive } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import {
@@ -36,6 +36,12 @@ if (config.llm.isLocalEndpoint) {
     "startup",
     `Local LLM caps: maxSteps=${config.llm.maxSteps} screeningMaxSteps=${config.llm.screeningMaxSteps} candidates=${config.llm.screeningCandidateLimit} maxTokens=${config.llm.maxTokens}`
   );
+  if (isTerseCavemanLive()) {
+    log(
+      "startup",
+      "Terse LLM mode ON (short outputs; MERIDIAN_CAVEMAN=0 or terseCaveman:false in user-config to disable)"
+    );
+  }
 }
 if (process.env.DRY_RUN !== "true" && !(process.env.JUPITER_API_KEY || "").trim()) {
   log(

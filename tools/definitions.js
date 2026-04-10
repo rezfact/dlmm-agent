@@ -372,7 +372,7 @@ Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minHolde
 Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, minVolumeToRebalance, emergencyPriceDropPct, takeProfitFeePct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
 Risk: maxPositions, maxDeployAmount
 Schedule: managementIntervalMin, screeningIntervalMin
-Models: managementModel, screeningModel, generalModel
+Models: managementModel, screeningModel, generalModel, terseCaveman (boolean — short Ollama/LM Studio replies; ignored on OpenRouter)
 Strategy: binsBelow
 
 Reason is optional but helpful — logged as a lesson when provided.`,
