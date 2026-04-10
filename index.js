@@ -9,7 +9,15 @@ import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
+import {
+  startPolling,
+  stopPolling,
+  sendMessage,
+  sendHTML,
+  notifyOutOfRange,
+  notifyStartupPing,
+  isEnabled as telegramEnabled,
+} from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
@@ -695,6 +703,7 @@ if (isTTY) {
   // Telegram bot (shared handler with non-TTY / Docker)
   if (telegramEnabled()) {
     startPolling(handleTelegramLine);
+    notifyStartupPing().catch(() => {});
   }
 
   console.log(`
@@ -912,6 +921,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   if (telegramEnabled()) {
     startPolling(handleTelegramLine);
     log("startup", "Telegram bot polling started (non-TTY / Docker)");
+    notifyStartupPing().catch(() => {});
   }
   (async () => {
     try {

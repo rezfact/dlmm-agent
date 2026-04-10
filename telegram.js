@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { dataPath } from "./data-path.js";
+import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = dataPath("user-config.json");
@@ -137,6 +138,23 @@ export function startPolling(onMessage) {
   _polling = true;
   poll(onMessage); // fire-and-forget
   log("telegram", "Bot polling started");
+}
+
+/** One-shot ping after process start (Docker/TTY). Requires TELEGRAM_CHAT_ID or saved telegramChatId. */
+export async function notifyStartupPing() {
+  if (!TOKEN) return;
+  if (!chatId) {
+    log(
+      "startup",
+      "Telegram startup ping skipped — set TELEGRAM_CHAT_ID in .env (or message the bot once to auto-register)"
+    );
+    return;
+  }
+  const mode = process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
+  await sendMessage(
+    `✅ Meridian online (${mode})\n` +
+      `Cron: manage ${config.schedule.managementIntervalMin}m · screen ${config.schedule.screeningIntervalMin}m`
+  );
 }
 
 export function stopPolling() {
