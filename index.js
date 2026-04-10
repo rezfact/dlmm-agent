@@ -135,7 +135,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   let positions = [];
   try {
       // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
-      const livePositions = await getMyPositions().catch(() => null);
+      const livePositions = await getMyPositions({ force: true }).catch(() => null);
       positions = livePositions?.positions || [];
 
       if (positions.length === 0) {
@@ -209,6 +209,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       const { content } = await agentLoop(`
 MANAGEMENT CYCLE — ${positions.length} position(s)
 
+TELEGRAM: Your reply is pasted to the operator's phone. Write a concise STATUS REPORT only.
+- Do NOT ask questions. Do NOT offer choices ("Would you like…").
+- Do NOT tell the user to call tools — you call tools. Say what you did or "No action".
+
 PRE-LOADED POSITION DATA (no fetching needed):
 ${positionBlocks}${hivePatterns}
 
@@ -238,6 +242,8 @@ Only add: **Rule [N]:** [reason] — if a close rule triggered. Omit rule line i
 
 After all positions, add one summary line:
 💼 [N] positions | $[total_value] | fees today: $[sum_unclaimed] | [any notable action taken]
+
+If nothing required action: one line "No action — positions within rules; no claims above threshold."
       `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
       mgmtReport = content;
     } catch (error) {
@@ -269,7 +275,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Hard guards — don't even run the agent if preconditions aren't met
     let prePositions, preBalance;
     try {
-      [prePositions, preBalance] = await Promise.all([getMyPositions(), getWalletBalances()]);
+      // force: true — stale cache caused screening to run while already at max positions; LLM then "explained" deploy errors to Telegram.
+      [prePositions, preBalance] = await Promise.all([
+        getMyPositions({ force: true }),
+        getWalletBalances(),
+      ]);
       if (prePositions.total_positions >= config.risk.maxPositions) {
         log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
         return;
@@ -281,6 +291,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
     } catch (e) {
       log("cron_error", `Screening pre-check failed: ${e.message}`);
+      screenReport = `Screening pre-check failed: ${e.message}`;
       return;
     }
 
@@ -376,6 +387,8 @@ SCREENING CYCLE
 ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
 ${candidateContext}
+TELEGRAM: Reply is sent to the operator's phone. Be concise. If you cannot deploy (tool error / skip), one or two lines only — no tutorials, no "you can call get_my_positions".
+
 DECISION RULES:
 - HARD SKIP if fees < ${config.screening.minTokenFeesSol} SOL (bundled/scam)
 - HARD SKIP if top10 > ${config.screening.maxTop10Pct}% OR bots > ${config.screening.maxBundlersPct}%

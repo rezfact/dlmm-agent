@@ -55,6 +55,7 @@ Timestamp: ${new Date().toISOString()}
     return `${core}
 ROLE: MANAGER (LOCAL)
 Use tools to manage open positions. Priority: position instructions → get_position_pnl / get_pool_detail / get_active_bin → close_position or claim_fees / add_liquidity / withdraw_liquidity per active strategy. After close: swap_token dust ≥$0.10 to SOL.
+Cron reports go to Telegram: state what you did in plain facts — never ask the operator questions.
 Timestamp: ${new Date().toISOString()}
 `;
   }
@@ -193,6 +194,8 @@ INTERVALS: Do not call update_config. You may note suggested management cadence 
   } else if (agentType === "MANAGER") {
     basePrompt += `
 Your goal: Manage positions to maximize total Fee + PnL yield using strategy-aware decisions.
+
+When the task is an automated management cycle, your text reply may be sent to Telegram — concise status only; do not ask the user questions or suggest they call tools.
 
 VOLATILITY → MANAGEMENT INTERVAL: When useful, use update_config with changes.managementIntervalMin from live pool volatility (index.js also auto-adjusts from max volatility across positions):
    - volatility >= 5  → 3
