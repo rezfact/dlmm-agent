@@ -64,6 +64,16 @@ Current screening timeframe: ${config.screening.timeframe} — interpret all met
 `;
 
   if (agentType === "SCREENER") {
+    if (config.llm.isLocalEndpoint) {
+      basePrompt += `
+═══════════════════════════════════════════
+ LOCAL LLM (Ollama / LM Studio) — MINIMIZE STEPS
+═══════════════════════════════════════════
+- Tool calls are slow on local models. If the user message includes PRE-LOADED CANDIDATE ANALYSIS, pick the best pool and call deploy_position — do not repeat get_token_holders, get_token_narrative, check_smart_wallets_on_pool, or study_top_lpers unless data is missing.
+- Prefer ≤3 tool calls total for a deploy path when pre-loads exist.
+
+`;
+    }
     basePrompt += `
 Your goal: Find high-yield, high-volume pools and DEPLOY capital using data-driven strategies.
 

@@ -35,6 +35,24 @@ const LOCAL_DEFAULT_MODEL =
 /** Default tag for Ollama (`ollama pull qwen2.5:3b`). Override with LLM_LOCAL_MODEL. */
 export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
 
+/**
+ * True when LLM_BASE_URL is not OpenRouter (Ollama, LM Studio, vLLM, etc.).
+ * Enables lower maxSteps / screeningMaxSteps / token caps so small local models finish in reasonable time.
+ * Override any cap via user-config.json (maxSteps, screeningMaxSteps, maxTokens) or env LLM_LOCAL_* below.
+ */
+export const LLM_IS_LOCAL_ENDPOINT = !USE_OPENROUTER_DEFAULT;
+
+const LOCAL_MAX_STEPS =
+  parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) || 14;
+const LOCAL_SCREENING_MAX_STEPS =
+  parseInt(process.env.LLM_LOCAL_SCREENING_MAX_STEPS || "", 10) || 16;
+const LOCAL_MAX_TOKENS =
+  parseInt(process.env.LLM_LOCAL_MAX_TOKENS || "", 10) || 2048;
+/** Pools pre-fetched + enriched for screening prompt (fewer = less context for weak models). */
+const SCREENING_CANDIDATE_LIMIT =
+  parseInt(process.env.LLM_SCREENING_CANDIDATE_LIMIT || "", 10) ||
+  (LLM_IS_LOCAL_ENDPOINT ? 3 : 5);
+
 const LLM_BUDGET_MODEL_DEFAULT =
   process.env.LLM_BUDGET_MODEL
   ?? (USE_OPENROUTER_DEFAULT
@@ -100,11 +118,25 @@ export const config = {
   // ─── LLM Settings ──────────────────────
   llm: {
     temperature: u.temperature ?? 0.373,
-    maxTokens:   u.maxTokens   ?? 4096,
-    maxSteps:    u.maxSteps    ?? 20,
-    /** Screening often needs more turns (tools + flaky free models); floor above maxSteps unless overridden. */
+    maxTokens:
+      u.maxTokens
+      ?? (LLM_IS_LOCAL_ENDPOINT ? LOCAL_MAX_TOKENS : 4096),
+    maxSteps:
+      u.maxSteps
+      ?? (LLM_IS_LOCAL_ENDPOINT ? LOCAL_MAX_STEPS : 20),
+    /**
+     * Cloud: high ceiling for flaky free APIs + long tool chains.
+     * Local (Ollama): keep low — each step can take minutes on CPU.
+     */
     screeningMaxSteps:
-      u.screeningMaxSteps ?? Math.max(u.maxSteps ?? 20, 32),
+      u.screeningMaxSteps
+      ?? (LLM_IS_LOCAL_ENDPOINT
+        ? Math.max(u.maxSteps ?? LOCAL_MAX_STEPS, LOCAL_SCREENING_MAX_STEPS)
+        : Math.max(u.maxSteps ?? 20, 32)),
+    /** Pre-loaded pools in screening cycle (index.js). */
+    screeningCandidateLimit: u.screeningCandidateLimit ?? SCREENING_CANDIDATE_LIMIT,
+    /** Set when using Ollama/LM Studio — index.js shortens narrative preloads. */
+    isLocalEndpoint: LLM_IS_LOCAL_ENDPOINT,
     // Hybrid: premium (Anthropic / primary LLM_BASE_URL) for manager; budget endpoint for screener + chat
     managementModel:
       u.managementModel

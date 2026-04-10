@@ -23,6 +23,12 @@ log(
   "startup",
   `LLM: ${config.llm.managementModel} (manage) · ${config.llm.screeningModel} (screen) · ${config.llm.generalModel} (chat)`
 );
+if (config.llm.isLocalEndpoint) {
+  log(
+    "startup",
+    `Local LLM caps: maxSteps=${config.llm.maxSteps} screeningMaxSteps=${config.llm.screeningMaxSteps} candidates=${config.llm.screeningCandidateLimit} maxTokens=${config.llm.maxTokens}`
+  );
+}
 if (process.env.DRY_RUN !== "true" && !(process.env.JUPITER_API_KEY || "").trim()) {
   log(
     "startup_warn",
@@ -288,11 +294,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
         : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
 
       // Pre-load top candidates + all recon data in parallel (saves 4-6 LLM steps)
-      const topCandidates = await getTopCandidates({ limit: 5 }).catch(() => null);
+      const candLimit = config.llm.screeningCandidateLimit ?? 5;
+      const topCandidates = await getTopCandidates({ limit: candLimit }).catch(() => null);
       const candidates = topCandidates?.candidates || topCandidates?.pools || [];
 
       const candidateBlocks = [];
-      for (const pool of candidates.slice(0, 5)) {
+      const narrMax = config.llm.isLocalEndpoint ? 320 : 500;
+      for (const pool of candidates.slice(0, candLimit)) {
         const mint = pool.base?.mint;
         const [smartWallets, holders, narrative, tokenInfo, poolMemory] = await Promise.allSettled([
             checkSmartWalletsOnPool({ pool_address: pool.pool }),
@@ -332,7 +340,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
             `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
             `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
             priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
-            n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
+            n?.narrative ? `  narrative: ${n.narrative.slice(0, narrMax)}` : `  narrative: none`,
             mem ? `  memory: ${mem}` : null,
           ].filter(Boolean);
 

@@ -53,11 +53,17 @@ const PREMIUM_API_KEY =
 function makeClient(baseURL, apiKey) {
   const isAnthropic = baseURL.includes("anthropic.com");
   const openRouterCompat = /openrouter\.ai/i.test(baseURL);
+  // Ollama / LM Studio on CPU can exceed 5m per completion; OpenRouter is usually fast enough at 5m.
+  const timeoutMs = isAnthropic
+    ? 10 * 60 * 1000
+    : openRouterCompat
+      ? 5 * 60 * 1000
+      : 22 * 60 * 1000;
   return {
     client: new OpenAI({
       baseURL,
       apiKey,
-      timeout: 5 * 60 * 1000,
+      timeout: timeoutMs,
       defaultHeaders: isAnthropic ? { "anthropic-version": "2023-06-01" } : {},
     }),
     isAnthropic,
