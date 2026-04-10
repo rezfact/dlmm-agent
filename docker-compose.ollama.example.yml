@@ -1,0 +1,25 @@
+# Example: run Ollama beside Meridian with bounded RAM (tune for your VPS).
+# Copy/adjust, then: docker compose -f docker-compose.ollama.example.yml up -d
+#
+# Point Meridian at this instance, e.g.:
+#   - Ollama on same host as Meridian: LLM_BASE_URL=http://host.docker.internal:11434/v1
+#   - Ollama on same compose network: LLM_BASE_URL=http://ollama:11434/v1  (+ attach meridian to this network)
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-local-llm
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      # Keep one model loaded to reduce RAM churn on small VPS
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    # Docker Compose (non-Swarm): classic memory limits
+    mem_limit: 3g
+    mem_reservation: 2g
+
+volumes:
+  ollama_data:

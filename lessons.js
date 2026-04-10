@@ -9,6 +9,7 @@
 import fs from "fs";
 import { log } from "./logger.js";
 import { dataPath } from "./data-path.js";
+import { config } from "./config.js";
 
 const USER_CONFIG_PATH = dataPath("user-config.json");
 
@@ -518,9 +519,15 @@ export function getLessonsForPrompt(opts = {}) {
 
   // Smaller caps for automated cycles — they don't need the full lesson history
   const isAutoCycle = agentType === "SCREENER" || agentType === "MANAGER";
-  const PINNED_CAP  = isAutoCycle ? 5  : 10;
-  const ROLE_CAP    = isAutoCycle ? 6  : 15;
-  const RECENT_CAP  = maxLessons ?? (isAutoCycle ? 10 : 35);
+  let PINNED_CAP  = isAutoCycle ? 5  : 10;
+  let ROLE_CAP    = isAutoCycle ? 6  : 15;
+  let RECENT_CAP  = maxLessons ?? (isAutoCycle ? 10 : 35);
+  // Ollama/small context: keep lesson block tiny (prompt truncation was destroying instructions)
+  if (config.llm.isLocalEndpoint) {
+    PINNED_CAP = isAutoCycle ? 2 : 4;
+    ROLE_CAP = isAutoCycle ? 2 : 6;
+    RECENT_CAP = Math.min(maxLessons ?? (isAutoCycle ? 4 : 12), isAutoCycle ? 4 : 12);
+  }
 
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);
@@ -567,7 +574,11 @@ export function getLessonsForPrompt(opts = {}) {
   if (roleMatched.length) sections.push(`── ${agentType} (${roleMatched.length}) ──\n` + fmt(roleMatched));
   if (recent.length)      sections.push(`── RECENT (${recent.length}) ──\n` + fmt(recent));
 
-  return sections.join("\n\n");
+  let text = sections.join("\n\n");
+  if (config.llm.isLocalEndpoint && text.length > 1800) {
+    text = text.slice(0, 1800) + "\n…[lessons truncated for local LLM]";
+  }
+  return text;
 }
 
 function fmt(lessons) {

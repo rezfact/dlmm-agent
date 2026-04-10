@@ -299,7 +299,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const candidates = topCandidates?.candidates || topCandidates?.pools || [];
 
       const candidateBlocks = [];
-      const narrMax = config.llm.isLocalEndpoint ? 320 : 500;
+      const narrMax = config.llm.isLocalEndpoint ? 180 : 500;
       for (const pool of candidates.slice(0, candLimit)) {
         const mint = pool.base?.mint;
         const [smartWallets, holders, narrative, tokenInfo, poolMemory] = await Promise.allSettled([

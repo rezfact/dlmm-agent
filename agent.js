@@ -7,10 +7,40 @@ const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "u
 // update_config omitted for SCREENER — avoids cron thrash + extra LLM/tool turns during screening
 const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "get_wallet_balance", "get_my_positions", "list_strategies", "get_strategy", "set_active_strategy", "swap_token", "add_liquidity", "study_top_lpers", "get_pool_detail"]);
 
+/**
+ * Smaller tool schema set for Ollama — full SCREENER list + JSON schemas were ~6k+ tokens alone.
+ * Pre-loaded screening already embeds holder/narrative/smart-wallet data in the user message.
+ */
+const LOCAL_SCREENER_TOOL_NAMES = new Set([
+  "deploy_position",
+  "get_active_bin",
+  "get_top_candidates",
+  "get_pool_detail",
+  "get_wallet_balance",
+  "get_my_positions",
+  "list_strategies",
+  "get_strategy",
+  "get_pool_memory",
+  "swap_token",
+  "add_liquidity",
+]);
+
 function getToolsForRole(agentType) {
-  if (agentType === "MANAGER")  return tools.filter(t => MANAGER_TOOLS.has(t.function.name));
-  if (agentType === "SCREENER") return tools.filter(t => SCREENER_TOOLS.has(t.function.name));
-  return tools;
+  let list;
+  if (agentType === "MANAGER") list = tools.filter((t) => MANAGER_TOOLS.has(t.function.name));
+  else if (agentType === "SCREENER") list = tools.filter((t) => SCREENER_TOOLS.has(t.function.name));
+  else list = tools;
+
+  if (config.llm.isLocalEndpoint && agentType === "SCREENER") {
+    return list.filter((t) => LOCAL_SCREENER_TOOL_NAMES.has(t.function.name));
+  }
+  return list;
+}
+
+function stringifyToolResultForLlm(result) {
+  const raw = typeof result === "string" ? result : JSON.stringify(result);
+  if (!config.llm.isLocalEndpoint || raw.length <= 7500) return raw;
+  return `${raw.slice(0, 7500)}…[truncated for local LLM]`;
 }
 import { getWalletBalances } from "./tools/wallet.js";
 import { getMyPositions } from "./tools/dlmm.js";
@@ -301,7 +331,7 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         return {
           role: "tool",
           tool_call_id: toolCall.id,
-          content: JSON.stringify(result),
+          content: stringifyToolResultForLlm(result),
         };
       }));
 

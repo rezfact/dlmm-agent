@@ -11,7 +11,66 @@
  */
 import { config } from "./config.js";
 
+/** One-line state for Ollama/small context — avoids 9k+ token prompts that Ollama truncates at 4096. */
+function compactState(portfolio, positions, stateSummary, perfSummary, lessons) {
+  const sol = portfolio?.sol != null ? Number(portfolio.sol).toFixed(3) : "?";
+  const usd = portfolio?.sol_usd != null ? `~$${portfolio.sol_usd}` : "";
+  const posList = (positions?.positions || []).slice(0, 8).map((p) => {
+    const id = (p.position || "").slice(0, 6);
+    return `${p.pair || "?"}:${id} IR=${p.in_range !== false}`;
+  });
+  const posLine = posList.length ? posList.join(" | ") : "none";
+  const mem = stateSummary != null ? JSON.stringify(stateSummary).slice(0, 500) : "{}";
+  const perf = perfSummary ? JSON.stringify(perfSummary).slice(0, 400) : "none";
+  const scr = config.screening;
+  const mg = config.management;
+  const lessonBlock = lessons ? lessons.slice(0, 1600) : "";
+  return `You are a Meteora DLMM LP agent on Solana (LOCAL/CPU — be brief).
+
+STATE: ${sol} SOL ${usd} | positions: ${positions?.total_positions ?? 0} → ${posLine}
+MEM: ${mem}
+PERF: ${perf}
+RULES: fee_active_tvl_ratio is already % (0.29=0.29%). timeframe=${scr.timeframe} | minTokenFeesSol=${scr.minTokenFeesSol} | bin_step [${scr.minBinStep}-${scr.maxBinStep}]
+GAS/deploy: gasReserve=${mg.gasReserve} deployFloor=${mg.deployAmountSol} minSolToOpen=${mg.minSolToOpen}
+
+${lessonBlock ? `LESSONS:\n${lessonBlock}\n` : ""}`;
+}
+
+function buildLocalSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary) {
+  const core = compactState(portfolio, positions, stateSummary, perfSummary, lessons);
+
+  if (agentType === "SCREENER") {
+    return `${core}
+ROLE: SCREENER (LOCAL)
+The user message includes PRE-LOADED CANDIDATE ANALYSIS — token checks and smart wallets are already summarized. Do NOT call discover_pools, study_top_lpers, get_token_holders, get_token_narrative, check_smart_wallets, or get_token_info unless a field is literally missing.
+
+Flow (≤4 tool rounds): (1) list_strategies → get_strategy for active (2) get_pool_memory for chosen pool (3) get_wallet_balance (4) get_pool_detail if you need volatility/trend → get_active_bin → deploy_position. Use swap_token/add_liquidity only if the strategy needs token legs.
+SOL-only deploy: amount_x=0, amount_y = full deploy SOL from the user message. Bin steps [${config.screening.minBinStep}-${config.screening.maxBinStep}]. One deploy per cycle.
+
+Timestamp: ${new Date().toISOString()}
+`;
+  }
+
+  if (agentType === "MANAGER") {
+    return `${core}
+ROLE: MANAGER (LOCAL)
+Use tools to manage open positions. Priority: position instructions → get_position_pnl / get_pool_detail / get_active_bin → close_position or claim_fees / add_liquidity / withdraw_liquidity per active strategy. After close: swap_token dust ≥$0.10 to SOL.
+Timestamp: ${new Date().toISOString()}
+`;
+  }
+
+  return `${core}
+ROLE: GENERAL (LOCAL)
+Execute the user request with tools; be concise. After close_position, swap recoverable tokens to SOL unless user said otherwise.
+Timestamp: ${new Date().toISOString()}
+`;
+}
+
 export function buildSystemPrompt(agentType, portfolio, positions, stateSummary = null, lessons = null, perfSummary = null) {
+  if (config.llm.isLocalEndpoint) {
+    return buildLocalSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  }
+
   const s = config.screening;
 
   let basePrompt = `You are an autonomous DLMM LP (Liquidity Provider) agent operating on Meteora, Solana.

@@ -43,15 +43,15 @@ export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
 export const LLM_IS_LOCAL_ENDPOINT = !USE_OPENROUTER_DEFAULT;
 
 const LOCAL_MAX_STEPS =
-  parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) || 14;
+  parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) || 10;
 const LOCAL_SCREENING_MAX_STEPS =
-  parseInt(process.env.LLM_LOCAL_SCREENING_MAX_STEPS || "", 10) || 16;
+  parseInt(process.env.LLM_LOCAL_SCREENING_MAX_STEPS || "", 10) || 12;
 const LOCAL_MAX_TOKENS =
-  parseInt(process.env.LLM_LOCAL_MAX_TOKENS || "", 10) || 2048;
+  parseInt(process.env.LLM_LOCAL_MAX_TOKENS || "", 10) || 1536;
 /** Pools pre-fetched + enriched for screening prompt (fewer = less context for weak models). */
 const SCREENING_CANDIDATE_LIMIT =
   parseInt(process.env.LLM_SCREENING_CANDIDATE_LIMIT || "", 10) ||
-  (LLM_IS_LOCAL_ENDPOINT ? 3 : 5);
+  (LLM_IS_LOCAL_ENDPOINT ? 2 : 5);
 
 const LLM_BUDGET_MODEL_DEFAULT =
   process.env.LLM_BUDGET_MODEL
