@@ -18,6 +18,7 @@
     "test:docker-ollama": "sh scripts/docker-ollama-smoke.sh",
     "test:docker-ollama-host": "docker compose run --rm --no-deps -e LLM_BASE_URL=http://host.docker.internal:11434/v1 -e LLM_API_KEY=ollama -e LLM_MODEL=${LLM_MODEL:-qwen2.5:3b} meridian npm run test:ollama",
     "test:terse-prompt": "node scripts/test-terse-prompt.mjs",
+    "vps:update": "bash scripts/vps-update.sh",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",

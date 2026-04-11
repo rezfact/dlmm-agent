@@ -90,7 +90,7 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | outOfRangeWaitMinutes | management | 30 |
 | managementIntervalMin | schedule | 10 |
 | screeningIntervalMin | schedule | 30 |
-| managementModel / screeningModel / generalModel | llm | openrouter/healer-alpha |
+| managementModel / screeningModel / generalModel | llm | `OPENROUTER_DEFAULT_MODEL` (default `nvidia/nemotron-3-super-120b-a12b:free`) |
 
 **`computeDeployAmount(walletSol)`** — scales position size with wallet balance (compounding). Formula: `clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)`.
 
@@ -177,8 +177,8 @@ const actualBaseFee = baseFactor > 0
 
 ## Model Configuration
 
-- Default model: `process.env.LLM_MODEL` or `openrouter/healer-alpha`
-- Fallback on 502/503/529: `arcee-ai/trinity-large-preview:free` (2nd attempt), then retry
+- Default OpenRouter model: `LLM_MODEL` / per-role user-config, else `OPENROUTER_DEFAULT_MODEL` (`nvidia/nemotron-3-super-120b-a12b:free` unless `OPENROUTER_DEFAULT_MODEL` or `LLM_OPENROUTER_MODEL` is set)
+- Fallback on 502/503/529: `LLM_BUDGET_MODEL` or `LLM_BUDGET_FALLBACK_MODEL` (default `arcee-ai/trinity-large-preview:free`), then retry
 - Per-role models: `managementModel`, `screeningModel`, `generalModel` in user-config.json
 - LM Studio: set `LLM_BASE_URL=http://localhost:1234/v1` and `LLM_API_KEY=lm-studio`
 - `maxOutputTokens` minimum: 2048 (free models may have lower limits causing empty responses)

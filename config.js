@@ -36,6 +36,16 @@ const LOCAL_DEFAULT_MODEL =
 export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
 
 /**
+ * Default OpenRouter model id when `LLM_BASE_URL` is OpenRouter (or unset → OpenRouter).
+ * Override: `OPENROUTER_DEFAULT_MODEL`, `LLM_OPENROUTER_MODEL`, or per-role keys in user-config.json.
+ */
+export const OPENROUTER_DEFAULT_MODEL = (
+  process.env.OPENROUTER_DEFAULT_MODEL ||
+  process.env.LLM_OPENROUTER_MODEL ||
+  "nvidia/nemotron-3-super-120b-a12b:free"
+).trim();
+
+/**
  * True when LLM_BASE_URL is not OpenRouter (Ollama, LM Studio, vLLM, etc.).
  * Enables lower maxSteps / screeningMaxSteps / token caps so small local models finish in reasonable time.
  * Override any cap via user-config.json (maxSteps, screeningMaxSteps, maxTokens) or env LLM_LOCAL_* below.
@@ -81,9 +91,7 @@ const SCREENING_CANDIDATE_LIMIT =
 
 const LLM_BUDGET_MODEL_DEFAULT =
   process.env.LLM_BUDGET_MODEL
-  ?? (USE_OPENROUTER_DEFAULT
-    ? "arcee-ai/trinity-large-preview:free"
-    : LOCAL_DEFAULT_MODEL);
+  ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL);
 
 export const config = {
   // ─── Risk Limits ─────────────────────────
@@ -169,15 +177,15 @@ export const config = {
     managementModel:
       u.managementModel
       ?? process.env.LLM_MODEL
-      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/healer-alpha" : LOCAL_DEFAULT_MODEL),
+      ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL),
     screeningModel:
       u.screeningModel
       ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
-      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/hunter-alpha" : LOCAL_DEFAULT_MODEL),
+      ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL),
     generalModel:
       u.generalModel
       ?? (LLM_HYBRID ? LLM_BUDGET_MODEL_DEFAULT : process.env.LLM_MODEL)
-      ?? (USE_OPENROUTER_DEFAULT ? "openrouter/healer-alpha" : LOCAL_DEFAULT_MODEL),
+      ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL),
   },
 
   // ─── Common Token Mints ────────────────

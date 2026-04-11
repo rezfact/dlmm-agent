@@ -2,6 +2,21 @@ import OpenAI from "openai";
 import { buildSystemPrompt } from "./prompt.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
+import { getWalletBalances } from "./tools/wallet.js";
+import { getMyPositions } from "./tools/dlmm.js";
+import { log } from "./logger.js";
+import {
+  config,
+  LLM_LOCAL_DEFAULT_MODEL,
+  OPENROUTER_DEFAULT_MODEL,
+} from "./config.js";
+import { getStateSummary } from "./state.js";
+import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+
+/** Alternate free model when primary OpenRouter model flakes (502/503/529 retries). */
+const OPENROUTER_RETRY_FALLBACK = (
+  process.env.LLM_BUDGET_FALLBACK_MODEL || "arcee-ai/trinity-large-preview:free"
+).trim();
 
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "update_config", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "withdraw_liquidity", "add_liquidity", "list_strategies", "get_strategy", "set_active_strategy", "get_pool_detail", "get_token_info", "get_active_bin", "study_top_lpers"]);
 // update_config omitted for SCREENER — avoids cron thrash + extra LLM/tool turns during screening
@@ -42,12 +57,6 @@ function stringifyToolResultForLlm(result) {
   if (!config.llm.isLocalEndpoint || raw.length <= 7500) return raw;
   return `${raw.slice(0, 7500)}…[truncated for local LLM]`;
 }
-import { getWalletBalances } from "./tools/wallet.js";
-import { getMyPositions } from "./tools/dlmm.js";
-import { log } from "./logger.js";
-import { config, LLM_LOCAL_DEFAULT_MODEL } from "./config.js";
-import { getStateSummary } from "./state.js";
-import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
 /** True while any agentLoop is executing — crons skip new work to avoid interleaved steps / double screening. */
 let _agentLoopActive = false;
@@ -155,12 +164,12 @@ const DEFAULT_MODEL =
   (premium.isAnthropic
     ? "claude-haiku-4-5"
     : premium.openRouterCompat
-      ? "openrouter/healer-alpha"
+      ? OPENROUTER_DEFAULT_MODEL
       : LLM_LOCAL_DEFAULT_MODEL);
 const PREMIUM_FALLBACK = premium.isAnthropic
   ? "claude-haiku-4-5"
   : premium.openRouterCompat
-    ? (process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free")
+    ? (process.env.LLM_BUDGET_MODEL || OPENROUTER_RETRY_FALLBACK)
     : LLM_LOCAL_DEFAULT_MODEL;
 
 function useBudgetForRole(agentType) {
@@ -180,7 +189,7 @@ function pickClientAndFallback(agentType) {
     const cloudModel =
       process.env.MERIDIAN_MANAGER_MODEL ||
       process.env.LLM_MANAGER_OPENROUTER_MODEL ||
-      "openrouter/healer-alpha";
+      OPENROUTER_DEFAULT_MODEL;
     return {
       ...managerOpenRouterClient,
       fallbackModel: process.env.LLM_MODEL || LLM_LOCAL_DEFAULT_MODEL,
@@ -194,7 +203,7 @@ function pickClientAndFallback(agentType) {
       fallbackModel: budget.isAnthropic
         ? "claude-haiku-4-5"
         : budget.openRouterCompat
-          ? (process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free")
+          ? (process.env.LLM_BUDGET_MODEL || OPENROUTER_RETRY_FALLBACK)
           : LLM_LOCAL_DEFAULT_MODEL,
     };
   }
@@ -214,7 +223,7 @@ function coerceModelForProvider(requestedModel, routing) {
   if (routing.isAnthropic) return m;
   if (m && !m.includes("/") && /^claude/i.test(m)) {
     if (routing.openRouterCompat) {
-      return process.env.LLM_BUDGET_MODEL || "arcee-ai/trinity-large-preview:free";
+      return process.env.LLM_BUDGET_MODEL || OPENROUTER_DEFAULT_MODEL;
     }
     return process.env.LLM_MODEL || LLM_LOCAL_DEFAULT_MODEL;
   }
