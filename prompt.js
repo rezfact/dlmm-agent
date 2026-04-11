@@ -11,15 +11,48 @@
  */
 import { config, isTerseCavemanLive } from "./config.js";
 
-/** Extra instructions when MERIDIAN_CAVEMAN / terse mode is on (local LLM only). */
-function localTerseCavemanBlock() {
-  if (!isTerseCavemanLive()) return "";
-  return `
+/**
+ * Runtime caveman / terse mode for every agentLoop call (local + cloud when enabled).
+ * @returns {"off"|"lite"|"full"|"ultra"}
+ */
+export function getMeridianCavemanRuntimeLevel() {
+  const explicit = (process.env.MERIDIAN_CAVEMAN_LEVEL || "").trim().toLowerCase();
+  if (explicit === "off" || explicit === "false" || explicit === "0") return "off";
+  if (["lite", "full", "ultra"].includes(explicit)) return explicit;
+  const force = process.env.MERIDIAN_CAVEMAN === "1" || process.env.MERIDIAN_CAVEMAN === "true";
+  if (force) return "full";
+  if (isTerseCavemanLive()) return "full";
+  return "off";
+}
 
-TERSE MODE (few-token style; inspired by github.com/JuliusBrussee/caveman — stay technically correct):
-- No greeting, no recap, no “Let me know”.
-- Short clauses; bullets OK. Tool JSON: only required keys.
-- Final reply after tools: ≤12 lines unless a required report format needs more.
+/** Injected into system prompt — fewer tokens on wire, same correctness (see .agents/skills/caveman/SKILL.md). */
+export function meridianCavemanRuntimeBlock() {
+  const level = getMeridianCavemanRuntimeLevel();
+  if (level === "off") return "";
+
+  const head = `
+
+MERIDIAN CAVEMAN (runtime, level=${level} — github.com/JuliusBrussee/caveman style):
+`;
+
+  if (level === "lite") {
+    return `${head}- Drop filler/hedging ("just", "basically", "sure", "happy to"). Keep full sentences where safer.
+- No greeting or recap. Tool JSON: only required keys.
+- Final reply: tight prose; prefer bullets for multi-point status.
+`;
+  }
+
+  if (level === "ultra") {
+    return `${head}- Max compression: fragments OK; abbreviate (pool/tx/bin/LP/OOR); arrows for flow (→).
+- Drop articles when still readable. Mint/address/SOL numbers exact — never shorten base58.
+- Tool JSON: minimal keys. Final text: dense bullets, min words unless a fixed report format forbids it.
+`;
+  }
+
+  // full (default)
+  return `${head}- Drop articles (a/the) when still clear. Fragments OK.
+- No pleasantries, no recap, no "Let me know". Technical terms exact.
+- Tool JSON: only required keys. Final reply: ≤12 lines unless a required report format needs more.
 `;
 }
 
@@ -50,7 +83,7 @@ ${lessonBlock ? `LESSONS:\n${lessonBlock}\n` : ""}`;
 
 function buildLocalSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary) {
   const core = compactState(portfolio, positions, stateSummary, perfSummary, lessons);
-  const terse = localTerseCavemanBlock();
+  const cave = meridianCavemanRuntimeBlock();
   const ts = `Timestamp: ${new Date().toISOString()}`;
 
   if (agentType === "SCREENER") {
@@ -60,7 +93,7 @@ The user message includes PRE-LOADED CANDIDATE ANALYSIS — token checks and sma
 
 Flow (≤4 tool rounds): (1) list_strategies → get_strategy for active (2) get_pool_memory for chosen pool (3) get_wallet_balance (4) get_pool_detail if you need volatility/trend → get_active_bin → deploy_position. Use swap_token/add_liquidity only if the strategy needs token legs.
 SOL-only deploy: amount_x=0, amount_y = full deploy SOL from the user message. Bin steps [${config.screening.minBinStep}-${config.screening.maxBinStep}]. One deploy per cycle.
-${terse}
+${cave}
 ${ts}
 `;
   }
@@ -70,7 +103,7 @@ ${ts}
 ROLE: MANAGER (LOCAL)
 Use tools to manage open positions. Priority: position instructions → get_position_pnl / get_pool_detail / get_active_bin → close_position or claim_fees / add_liquidity / withdraw_liquidity per active strategy. After close: swap_token dust ≥$0.10 to SOL.
 Cron reports go to Telegram: state what you did in plain facts — never ask the operator questions.
-${terse}
+${cave}
 ${ts}
 `;
   }
@@ -78,7 +111,7 @@ ${ts}
   return `${core}
 ROLE: GENERAL (LOCAL)
 Execute the user request with tools; be concise. After close_position, swap recoverable tokens to SOL unless user said otherwise.
-${terse}
+${cave}
 ${ts}
 `;
 }
@@ -254,5 +287,6 @@ PARALLEL FETCH RULE: When deploying to a specific pool, call get_pool_detail, ch
 `;
   }
 
-  return basePrompt + `\nTimestamp: ${new Date().toISOString()}\n`;
+  const cave = meridianCavemanRuntimeBlock();
+  return basePrompt + cave + `\nTimestamp: ${new Date().toISOString()}\n`;
 }

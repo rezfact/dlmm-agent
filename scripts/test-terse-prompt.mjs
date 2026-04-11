@@ -17,9 +17,14 @@ if (!isTerseCavemanLive()) {
   console.error("FAIL: expected terse mode live (MERIDIAN_CAVEMAN=1)");
   process.exit(1);
 }
-const p = buildSystemPrompt("SCREENER", { sol: 1 }, { total_positions: 0, positions: [] }, {}, null, null);
-if (!p.includes("TERSE MODE")) {
-  console.error("FAIL: prompt missing TERSE MODE block");
+const { getMeridianCavemanRuntimeLevel } = await import("../prompt.js");
+if (getMeridianCavemanRuntimeLevel() === "off") {
+  console.error("FAIL: expected caveman level not off (MERIDIAN_CAVEMAN=1 or local terse)");
   process.exit(1);
 }
-console.log("OK — terse prompt block present, length", p.length);
+const p = buildSystemPrompt("SCREENER", { sol: 1 }, { total_positions: 0, positions: [] }, {}, null, null);
+if (!p.includes("MERIDIAN CAVEMAN")) {
+  console.error("FAIL: prompt missing MERIDIAN CAVEMAN block");
+  process.exit(1);
+}
+console.log("OK — caveman runtime block present, level", getMeridianCavemanRuntimeLevel(), "length", p.length);
