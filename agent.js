@@ -112,6 +112,44 @@ if (LLM_HYBRID && !budget) {
   );
 }
 
+// ─── OpenRouter for MANAGER only (local Ollama primary) — until quota / rate limit ─────────
+const MERIDIAN_MANAGER_OPENROUTER =
+  process.env.MERIDIAN_MANAGER_OPENROUTER === "true" ||
+  process.env.MERIDIAN_MANAGER_OPENROUTER === "1";
+const MANAGER_OPENROUTER_KEY = (
+  process.env.LLM_MANAGER_OPENROUTER_KEY ||
+  process.env.OPENROUTER_API_KEY ||
+  ""
+).trim();
+
+/** After 429/402 on OpenRouter manager, skip cloud until this epoch ms. */
+let _managerOpenRouterPausedUntil = 0;
+
+function managerOpenRouterCooldownMs() {
+  const h = parseInt(process.env.MERIDIAN_MANAGER_OPENROUTER_COOLDOWN_HOURS || "12", 10);
+  return (Number.isFinite(h) && h > 0 ? h : 12) * 3600 * 1000;
+}
+
+const managerOpenRouterClient =
+  MERIDIAN_MANAGER_OPENROUTER &&
+  MANAGER_OPENROUTER_KEY &&
+  config.llm.isLocalEndpoint
+    ? makeClient(BUDGET_BASE_URL, MANAGER_OPENROUTER_KEY)
+    : null;
+
+if (MERIDIAN_MANAGER_OPENROUTER && config.llm.isLocalEndpoint && !MANAGER_OPENROUTER_KEY) {
+  log(
+    "warn",
+    "MERIDIAN_MANAGER_OPENROUTER=1 but OPENROUTER_API_KEY (or LLM_MANAGER_OPENROUTER_KEY) is missing — MANAGER stays on local LLM"
+  );
+}
+if (managerOpenRouterClient) {
+  log(
+    "startup",
+    `MERIDIAN_MANAGER_OPENROUTER: MANAGER → OpenRouter until 429/402, then local for ${parseInt(process.env.MERIDIAN_MANAGER_OPENROUTER_COOLDOWN_HOURS || "12", 10) || 12}h (MERIDIAN_MANAGER_OPENROUTER_COOLDOWN_HOURS)`
+  );
+}
+
 const DEFAULT_MODEL =
   process.env.LLM_MODEL ||
   (premium.isAnthropic
@@ -134,6 +172,22 @@ function useBudgetForRole(agentType) {
 }
 
 function pickClientAndFallback(agentType) {
+  if (
+    agentType === "MANAGER" &&
+    managerOpenRouterClient &&
+    Date.now() >= _managerOpenRouterPausedUntil
+  ) {
+    const cloudModel =
+      process.env.MERIDIAN_MANAGER_MODEL ||
+      process.env.LLM_MANAGER_OPENROUTER_MODEL ||
+      "openrouter/healer-alpha";
+    return {
+      ...managerOpenRouterClient,
+      fallbackModel: process.env.LLM_MODEL || LLM_LOCAL_DEFAULT_MODEL,
+      managerOpenRouterModel: cloudModel,
+      isManagerOpenRouter: true,
+    };
+  }
   if (useBudgetForRole(agentType)) {
     return {
       ...budget,
@@ -204,24 +258,10 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
     { role: "user", content: goal },
   ];
 
-  const routing = pickClientAndFallback(agentType);
-  const { client, fallbackModel } = routing;
-  const rawModel =
-    model != null && model !== ""
-      ? model
-      : defaultModelForRole(agentType) || DEFAULT_MODEL;
-  const primaryModel = coerceModelForProvider(rawModel, routing);
-  if (primaryModel !== rawModel) {
-    log(
-      "agent",
-      `Using "${primaryModel}" (remapped from "${rawModel}" for this LLM endpoint)`
-    );
-  }
-
   let emptyStreak = 0;
   const EMPTY_LOG_EVERY = 6;
   const EMPTY_FAIL_AFTER = 24;
-  for (let step = 0; step < maxSteps; step++) {
+  stepLoop: for (let step = 0; step < maxSteps; step++) {
     // After empty LLM replies we step-- and continue; `step` stays the same, so without this
     // we'd spam "Step 1/32" on every retry.
     if (emptyStreak === 0) {
@@ -229,13 +269,29 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
     }
 
     try {
+      const routingThisStep = pickClientAndFallback(agentType);
+      const clientThisStep = routingThisStep.client;
+      const fallbackModel = routingThisStep.fallbackModel;
+      const rawModel =
+        routingThisStep.managerOpenRouterModel ??
+        (model != null && model !== ""
+          ? model
+          : defaultModelForRole(agentType) || DEFAULT_MODEL);
+      const primaryModel = coerceModelForProvider(rawModel, routingThisStep);
+      if (primaryModel !== rawModel && emptyStreak === 0) {
+        log(
+          "agent",
+          `Using "${primaryModel}" (remapped from "${rawModel}" for this LLM endpoint)`
+        );
+      }
+
       let usedModel = primaryModel;
 
       // Retry: HTTP/JSON flakes (OpenRouter free tier), empty body, and 502/503/529
       let response;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          response = await client.chat.completions.create({
+          response = await clientThisStep.chat.completions.create({
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType),
@@ -244,6 +300,18 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
         } catch (err) {
+          if (
+            routingThisStep.isManagerOpenRouter &&
+            (err?.status === 429 || err?.status === 402)
+          ) {
+            _managerOpenRouterPausedUntil = Date.now() + managerOpenRouterCooldownMs();
+            log(
+              "agent",
+              `Manager OpenRouter paused (${err.status}) — local LLM until ${new Date(_managerOpenRouterPausedUntil).toISOString()}`
+            );
+            step--;
+            continue stepLoop;
+          }
           if (isTransientLlmError(err) && attempt < 2) {
             const wait = (attempt + 1) * 3000;
             log(
