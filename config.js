@@ -36,8 +36,10 @@ const LOCAL_DEFAULT_MODEL =
 export const LLM_LOCAL_DEFAULT_MODEL = LOCAL_DEFAULT_MODEL;
 
 /**
- * Default OpenRouter model id when `LLM_BASE_URL` is OpenRouter (or unset → OpenRouter).
- * Override: `OPENROUTER_DEFAULT_MODEL`, `LLM_OPENROUTER_MODEL`, or per-role keys in user-config.json.
+ * Default OpenRouter model id when the primary API is OpenRouter (`LLM_BASE_URL` unset or openrouter.ai),
+ * and for **MANAGER-only** OpenRouter when `MERIDIAN_MANAGER_OPENROUTER=1` with Ollama as `LLM_BASE_URL`
+ * (SCREENER/GENERAL stay on Ollama — see `docs/llm-ollama-openrouter-manager-notes.md`).
+ * Override: `OPENROUTER_DEFAULT_MODEL`, `LLM_OPENROUTER_MODEL`, `MERIDIAN_MANAGER_MODEL`, or user-config role keys.
  */
 export const OPENROUTER_DEFAULT_MODEL = (
   process.env.OPENROUTER_DEFAULT_MODEL ||
