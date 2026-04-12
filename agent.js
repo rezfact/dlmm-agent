@@ -235,7 +235,7 @@ function coerceModelForProvider(requestedModel, routing) {
  *
  * @param {string} goal - The task description for the agent
  * @param {number} maxSteps - Safety limit on iterations (default 20)
- * @returns {string} - The agent's final text response
+ * @returns {{ content: string, userMessage: string, deploySucceeded?: boolean }}
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null) {
   _agentLoopActive = true;
@@ -266,6 +266,9 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
     ...sessionHistory,          // inject prior conversation turns
     { role: "user", content: goal },
   ];
+
+  /** True only after deploy_position returns a real or DRY_RUN simulated deploy (for screening report guards). */
+  let deploySucceededThisRun = false;
 
   let emptyStreak = 0;
   const EMPTY_LOG_EVERY = 6;
@@ -387,7 +390,11 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         emptyStreak = 0;
         log("agent", "Final answer reached");
         log("agent", msg.content);
-        return { content: msg.content, userMessage: goal };
+        return {
+          content: msg.content,
+          userMessage: goal,
+          deploySucceeded: deploySucceededThisRun,
+        };
       }
 
       emptyStreak = 0;
@@ -404,6 +411,19 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         }
 
         const result = await executeTool(functionName, functionArgs);
+
+        if (functionName === "deploy_position" && result && !result.blocked) {
+          if (process.env.DRY_RUN === "true" && result.dry_run) {
+            deploySucceededThisRun = true;
+          } else if (
+            result.success === true &&
+            result.position &&
+            Array.isArray(result.txs) &&
+            result.txs.length > 0
+          ) {
+            deploySucceededThisRun = true;
+          }
+        }
 
         return {
           role: "tool",
@@ -430,7 +450,11 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
   }
 
   log("agent", "Max steps reached without final answer");
-  return { content: "Max steps reached. Review logs for partial progress.", userMessage: goal };
+  return {
+    content: "Max steps reached. Review logs for partial progress.",
+    userMessage: goal,
+    deploySucceeded: deploySucceededThisRun,
+  };
 }
 
 function sleep(ms) {

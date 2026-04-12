@@ -93,6 +93,7 @@ The user message includes PRE-LOADED CANDIDATE ANALYSIS — token checks and sma
 
 Flow (≤4 tool rounds): (1) list_strategies → get_strategy for active (2) get_pool_memory for chosen pool (3) get_wallet_balance (4) get_pool_detail if you need volatility/trend → get_active_bin → deploy_position. Use swap_token/add_liquidity only if the strategy needs token legs.
 SOL-only deploy: amount_x=0, amount_y = full deploy SOL from the user message. Bin steps [${config.screening.minBinStep}-${config.screening.maxBinStep}]. One deploy per cycle.
+CRITICAL: Never print a line starting "Deployed:" unless deploy_position already returned success with txs in this run. If you skip or fail, use "Skipped:" — fake deploy lines confuse operators and are stripped server-side.
 ${cave}
 ${ts}
 `;

@@ -270,6 +270,22 @@ If nothing required action: one line "No action — positions within rules; no c
   return mgmtReport;
 }
 
+/**
+ * Small models paste the "Deployed:" template without calling deploy_position.
+ * Never surface a false on-chain deploy to Telegram/logs.
+ */
+function finalizeScreeningReport(rawContent, deploySucceeded) {
+  const text = String(rawContent || "").trim();
+  if (!text) return rawContent;
+  if (deploySucceeded) return rawContent;
+  if (!/(^|\n)\s*Deployed\s*:/i.test(text)) return rawContent;
+  log("screening_warn", "Stripped false 'Deployed:' — deploy_position did not succeed this run");
+  const body = text
+    .replace(/^\s*Deployed\s*:/gim, "Skipped (no on-chain deploy):")
+    .replace(/\n\s*Deployed\s*:/gim, "\nSkipped (no on-chain deploy):");
+  return `⚠️ Screening: model claimed a deploy in text, but deploy_position did not succeed this cycle.\n\n${body}`.slice(0, 4090);
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
     if (_screeningBusy) return;
     if (isAgentLoopRunning()) {
@@ -390,7 +406,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       } catch { /* hive is best-effort */ }
 
-      const { content } = await agentLoop(`
+      const { content, deploySucceeded } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
@@ -412,13 +428,16 @@ STEPS:
 2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(35 + (volatility/5)*55) clamped to [35,90].
    DEPLOY SIZE: For SOL-only LP use amount_y = ${deployAmount} SOL exactly, amount_x = 0. If swap_token fails, still use amount_y = ${deployAmount} (never 0.36 or other partial SOL when minimum is ${config.management.deployAmountSol}).
-3. Report in this exact format (no tables, no extra sections):
+3. Report format (no tables, no extra sections):
+   - ONLY if deploy_position returned success in this run, use:
    Deployed: PAIR
    bin_step=X | fee=X% | bots=X% | top10=X% | fees=XSOL
    range=minPrice→maxPrice (downside=(minPrice/maxPrice-1)*100%)
    smart_wallets=name1,name2 (or none)
    narrative: <one sentence>
    reason: <one sentence why picked over others>
+   - Otherwise start with: Skipped: <one line reason> (do NOT write "Deployed:")
+
       `,
         config.llm.screeningMaxSteps,
         [],
@@ -426,7 +445,7 @@ STEPS:
         config.llm.screeningModel,
         Math.max(2048, config.llm.maxTokens)
       );
-      screenReport = content;
+      screenReport = finalizeScreeningReport(content, deploySucceeded === true);
     } catch (error) {
       log("cron_error", `Screening cycle failed: ${error.message}`);
       screenReport = `Screening cycle failed: ${error.message}`;
