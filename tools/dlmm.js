@@ -67,12 +67,51 @@ function isBlockhashExpiredError(err) {
   return (
     m.includes("block height exceeded") ||
     m.includes("blockheight exceeded") ||
-    m.includes("transactionexpiredblockheightexceeded")
+    m.includes("transactionexpiredblockheightexceeded") ||
+    (m.includes("signature") && m.includes("expired")) ||
+    m.includes("expired: block height exceeded")
   );
 }
 
 const BLOCKHASH_RETRY_ATTEMPTS = 3;
 const BLOCKHASH_RETRY_DELAY_MS = 600;
+
+/** Hard caps — LLM typos (e.g. bins_above as an absolute bin id) caused 600+ bin spans and ProgramFailedToComplete. */
+const DEPLOY_MAX_BINS_BELOW = 100;
+const DEPLOY_MAX_BINS_ABOVE = 50;
+const DEPLOY_MAX_TOTAL_BINS = 120;
+
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function sanitizeBinCount(raw, fallback) {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
+}
+
+/**
+ * Build a fresh tx and send; on blockhash expiry rebuild via txBuilder (do not reuse the same Transaction).
+ */
+async function sendAndConfirmWithBlockhashRetry(conn, signers, logTag, txBuilder) {
+  let lastErr;
+  for (let attempt = 1; attempt <= BLOCKHASH_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const tx = await txBuilder();
+      return await sendAndConfirmTransaction(conn, tx, signers, { skipPreflight: true });
+    } catch (e) {
+      lastErr = e;
+      if (isBlockhashExpiredError(e) && attempt < BLOCKHASH_RETRY_ATTEMPTS) {
+        log("deploy", `${logTag}: stale blockhash/signature, retry ${attempt + 1}/${BLOCKHASH_RETRY_ATTEMPTS}...`);
+        await sleepMs(BLOCKHASH_RETRY_DELAY_MS);
+      } else {
+        throw e;
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // ─── Pool Cache ────────────────────────────────────────────────
 const poolCache = new Map();
@@ -124,8 +163,11 @@ export async function deployPosition({
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
 
-  const activeBinsBelow = bins_below ?? config.strategy.binsBelow;
-  const activeBinsAbove = bins_above ?? 0;
+  const activeBinsBelow = sanitizeBinCount(
+    bins_below != null ? bins_below : config.strategy.binsBelow,
+    config.strategy.binsBelow,
+  );
+  const activeBinsAbove = sanitizeBinCount(bins_above != null ? bins_above : 0, 0);
 
   if (process.env.DRY_RUN === "true") {
     const totalBins = activeBinsBelow + activeBinsAbove;
@@ -164,6 +206,28 @@ export async function deployPosition({
     throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, or bid_ask.`);
   }
 
+  if (minBinId > maxBinId) {
+    return {
+      success: false,
+      error:
+        `Invalid bin range: min bin ${minBinId} > max bin ${maxBinId} (active=${activeBin.binId}, bins_below=${activeBinsBelow}, bins_above=${activeBinsAbove}). ` +
+        `bins_below and bins_above must be non-negative counts from the active bin, not absolute bin ids.`,
+    };
+  }
+  if (activeBinsBelow > DEPLOY_MAX_BINS_BELOW || activeBinsAbove > DEPLOY_MAX_BINS_ABOVE) {
+    return {
+      success: false,
+      error: `bins_below (${activeBinsBelow}) or bins_above (${activeBinsAbove}) exceeds limit (${DEPLOY_MAX_BINS_BELOW} / ${DEPLOY_MAX_BINS_ABOVE}).`,
+    };
+  }
+  const totalBinsSpan = activeBinsBelow + activeBinsAbove;
+  if (totalBinsSpan > DEPLOY_MAX_TOTAL_BINS) {
+    return {
+      success: false,
+      error: `Bin span too large (${totalBinsSpan} bins, max ${DEPLOY_MAX_TOTAL_BINS}). Lower bins_below/bins_above.`,
+    };
+  }
+
   // Calculate amounts
   // If amount_y is not provided but amount_sol is, use amount_sol (for backward compatibility)
   const finalAmountY = amount_y ?? amount_sol ?? 0;
@@ -190,6 +254,7 @@ export async function deployPosition({
 
   try {
     const txHashes = [];
+    const conn = getConnection();
 
     if (isWideRange) {
       // ── Wide Range Path (>69 bins) ─────────────────────────────────
@@ -208,7 +273,21 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers, { skipPreflight: true });
+        const idx = i;
+        const txHash = await sendAndConfirmWithBlockhashRetry(conn, signers, `wide-create-${i + 1}/${createTxArray.length}`, async () => {
+          const p = await getPool(pool_address);
+          const txs = await p.createExtendedEmptyPosition(
+            minBinId,
+            maxBinId,
+            newPosition.publicKey,
+            wallet.publicKey,
+          );
+          const arr = Array.isArray(txs) ? txs : [txs];
+          if (!arr[idx]) {
+            throw new Error(`createExtendedEmptyPosition: missing tx index ${idx} (got ${arr.length})`);
+          }
+          return arr[idx];
+        });
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -224,21 +303,44 @@ export async function deployPosition({
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet], { skipPreflight: true });
+        const idx = i;
+        const txHash = await sendAndConfirmWithBlockhashRetry(conn, [wallet], `wide-add-${i + 1}/${addTxArray.length}`, async () => {
+          const p = await getPool(pool_address);
+          const txs = await p.addLiquidityByStrategyChunkable({
+            positionPubKey: newPosition.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: totalXLamports,
+            totalYAmount: totalYLamports,
+            strategy: { minBinId, maxBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
+            slippage: 10,
+          });
+          const arr = Array.isArray(txs) ? txs : [txs];
+          if (!arr[idx]) {
+            throw new Error(`addLiquidityByStrategyChunkable: missing tx index ${idx} (got ${arr.length})`);
+          }
+          return arr[idx];
+        });
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
     } else {
       // ── Standard Path (≤69 bins) ─────────────────────────────────
-      const tx = await pool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: newPosition.publicKey,
-        user: wallet.publicKey,
-        totalXAmount: totalXLamports,
-        totalYAmount: totalYLamports,
-        strategy: { maxBinId, minBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
-        slippage: 1000, // 10% in bps
-      });
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition], { skipPreflight: true });
+      const txHash = await sendAndConfirmWithBlockhashRetry(
+        conn,
+        [wallet, newPosition],
+        "init+add-liquidity",
+        async () => {
+          const p = await getPool(pool_address);
+          return await p.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: newPosition.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: totalXLamports,
+            totalYAmount: totalYLamports,
+            strategy: { maxBinId, minBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
+            slippage: 1000, // 10% in bps
+          });
+        },
+      );
       txHashes.push(txHash);
     }
 
