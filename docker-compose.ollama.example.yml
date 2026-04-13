@@ -17,9 +17,9 @@ services:
     environment:
       # Keep one model loaded to reduce RAM churn on small VPS
       OLLAMA_MAX_LOADED_MODELS: "1"
-    # Docker Compose (non-Swarm): min reservation + max cap (tune for host: Meridian ~2G + OS + other stacks)
-    mem_limit: 5g
-    mem_reservation: 3g
+    # Docker Compose (non-Swarm): ~8 GiB host: leave room for Meridian (~1.5G) + IPFS + OS (see README).
+    mem_limit: 4g
+    mem_reservation: 2g
 
 volumes:
   ollama_data:

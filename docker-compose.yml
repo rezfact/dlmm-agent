@@ -1,4 +1,4 @@
-# Meridian — cap: 1 CPU, 2 GiB RAM (tune under deploy.resources.limits).
+# Meridian — cap: 1 CPU, 1.5 GiB RAM (tune for ~8 GiB hosts with Ollama + IPFS; raise if you only run Meridian).
 # Copy .env next to this file, then: docker compose up -d --build
 #
 # Ollama in Docker: see `networks.llm` at bottom — or `docker network connect` (see .env.example).
@@ -22,7 +22,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 2G
+          memory: 1536M
         reservations:
           cpus: "0.25"
           memory: 512M

@@ -74,7 +74,7 @@ docker compose up -d --build
 docker compose logs -f meridian
 ```
 
-State, logs, `user-config.json`, and JSON stores live under `./meridian-data` (mounted at `/data`). Requires Docker Compose **v2.24+** for resource limits to apply with `docker compose up`; otherwise run `docker update --cpus=1 --memory=2g meridian` after start.
+State, logs, `user-config.json`, and JSON stores live under `./meridian-data` (mounted at `/data`). Requires Docker Compose **v2.24+** for resource limits to apply with `docker compose up`; otherwise run `docker update --cpus=1 --memory=1536m meridian` after start.
 
 **Lower LLM cost:** set `MERIDIAN_LLM_SAVER=true` in `.env` so screening runs only on `screeningIntervalMin` (management cron no longer starts extra screening when idle). Raise `healthCheckIntervalMin` in `user-config.json` (e.g. `180` = every 3h) — it now drives the health-check cron.
 
