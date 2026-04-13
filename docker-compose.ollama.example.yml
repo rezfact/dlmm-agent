@@ -18,7 +18,7 @@ services:
       # Keep one model loaded to reduce RAM churn on small VPS
       OLLAMA_MAX_LOADED_MODELS: "1"
     # Docker Compose (non-Swarm): classic memory limits
-    mem_limit: 3g
+    mem_limit: 4g
     mem_reservation: 2g
 
 volumes:
