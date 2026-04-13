@@ -153,6 +153,7 @@ const toolMap = {
       outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
       minVolumeToRebalance: ["management", "minVolumeToRebalance"],
       emergencyPriceDropPct: ["management", "emergencyPriceDropPct"],
+      stopLossPct: ["management", "emergencyPriceDropPct"],
       takeProfitFeePct: ["management", "takeProfitFeePct"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],

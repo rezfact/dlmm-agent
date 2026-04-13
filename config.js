@@ -22,6 +22,22 @@ if (u.walletKey) {
 }
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
+// Optional OpenRouter-style overrides from user-config (colleague-style presets). Prefer .env for secrets.
+if (u.llmBaseUrl && String(u.llmBaseUrl).trim()) {
+  process.env.LLM_BASE_URL ||= String(u.llmBaseUrl).trim();
+}
+const _llmKeyFromFile = u.llmApiKey != null ? String(u.llmApiKey).trim() : "";
+if (
+  _llmKeyFromFile &&
+  !(process.env.OPENROUTER_API_KEY || "").trim() &&
+  !(process.env.LLM_API_KEY || "").trim()
+) {
+  console.warn(
+    "[config] WARNING: llmApiKey in user-config.json applied to OPENROUTER_API_KEY. " +
+      "Prefer OPENROUTER_API_KEY or LLM_API_KEY in .env — avoid committing keys."
+  );
+  process.env.OPENROUTER_API_KEY ||= _llmKeyFromFile;
+}
 
 const LLM_HYBRID =
   process.env.LLM_HYBRID === "true" || process.env.LLM_HYBRID === "1";
@@ -129,7 +145,8 @@ export const config = {
     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
-    emergencyPriceDropPct: u.emergencyPriceDropPct ?? -50,
+    /** setup.js writes `stopLossPct`; management prompt uses emergencyPriceDropPct. */
+    emergencyPriceDropPct: u.emergencyPriceDropPct ?? u.stopLossPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
