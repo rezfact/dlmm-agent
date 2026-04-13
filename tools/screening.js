@@ -82,8 +82,15 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
+  const maxV = config.screening.maxVolatility;
   const eligible = pools
     .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
+    .filter(
+      (p) =>
+        maxV == null ||
+        !Number.isFinite(p.volatility) ||
+        p.volatility <= maxV,
+    )
     .slice(0, limit);
 
   return {

@@ -847,6 +847,7 @@ Commands:
       const s = config.screening;
       console.log("\nCurrent screening thresholds:");
       console.log(`  minFeeActiveTvlRatio: ${s.minFeeActiveTvlRatio}`);
+      console.log(`  maxVolatility:        ${s.maxVolatility}`);
       console.log(`  minOrganic:           ${s.minOrganic}`);
       console.log(`  minHolders:           ${s.minHolders}`);
       console.log(`  minTvl:               ${s.minTvl}`);

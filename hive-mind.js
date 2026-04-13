@@ -157,6 +157,7 @@ export async function syncToHive() {
     // Screening thresholds from config
     const thresholds = {
       minFeeActiveTvlRatio: cfg.minFeeActiveTvlRatio,
+      maxVolatility: cfg.maxVolatility,
       minTvl: cfg.minTvl,
       maxTvl: cfg.maxTvl,
       minOrganic: cfg.minOrganic,

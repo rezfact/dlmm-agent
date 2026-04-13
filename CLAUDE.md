@@ -69,6 +69,7 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | Key | Section | Default |
 |-----|---------|---------|
 | minFeeActiveTvlRatio | screening | 0.05 |
+| maxVolatility | screening | 10 (soft cap; `getTopCandidates` drops pools above this) |
 | minTvl / maxTvl | screening | 10k / 150k |
 | minVolume | screening | 500 |
 | minOrganic | screening | 60 |
@@ -190,9 +191,8 @@ const actualBaseFee = baseFactor > 0
 
 `lessons.js` records closed position performance and auto-derives lessons. Key points:
 - `getLessonsForPrompt({ agentType })` — injects relevant lessons into system prompt
-- `evolveThresholds()` — adjusts screening thresholds based on winners vs losers
+- `evolveThresholds()` — adjusts `maxVolatility`, `minFeeActiveTvlRatio`, and `minOrganic` from closed-position stats (persists flat keys to user-config.json; legacy `minFeeTvlRatio` still loads as the fee floor)
 - Performance recorded via `recordPerformance()` called from executor.js after `close_position`
-- **Known issue**: `evolveThresholds()` references `maxVolatility` and `minFeeTvlRatio` but config.js uses `minFeeActiveTvlRatio` and has no `maxVolatility` key — the evolution of these keys is a no-op
 
 ---
 
@@ -224,5 +224,4 @@ Not required for normal operation.
 
 ## Known Issues / Tech Debt
 
-- `lessons.js evolveThresholds()` evolves `maxVolatility` + `minFeeTvlRatio` (wrong key names — should be `minFeeActiveTvlRatio`; `maxVolatility` doesn't exist in config at all). The evolution is a no-op for those keys.
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.

@@ -368,7 +368,7 @@ WARNING: This executes a real on-chain transaction.`,
 Changes persist to user-config.json and take effect immediately — no restart needed.
 
 VALID KEYS (use EXACTLY these key names, nothing else):
-Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, category, minTokenFeesSol
+Screening: minFeeActiveTvlRatio, maxVolatility, minTvl, maxTvl, minVolume, minOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, category, minTokenFeesSol
 Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, minVolumeToRebalance, emergencyPriceDropPct, stopLossPct (alias → emergencyPriceDropPct), takeProfitFeePct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
 Risk: maxPositions, maxDeployAmount
 Schedule: managementIntervalMin, screeningIntervalMin
