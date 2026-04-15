@@ -92,6 +92,7 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | managementIntervalMin | schedule | 10 |
 | screeningIntervalMin | schedule | 30 |
 | managementModel / screeningModel / generalModel | llm | `OPENROUTER_DEFAULT_MODEL` (default `nvidia/nemotron-3-super-120b-a12b:free`) |
+| MERIDIAN_VPS_PROFILE=small (env) | — | With Ollama: lowers local `maxSteps` / `maxTokens`, slimmer screening preload; see `.env.example` |
 
 **`computeDeployAmount(walletSol)`** — scales position size with wallet balance (compounding). Formula: `clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)`.
 

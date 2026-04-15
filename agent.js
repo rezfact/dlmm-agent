@@ -54,8 +54,9 @@ function getToolsForRole(agentType) {
 
 function stringifyToolResultForLlm(result) {
   const raw = typeof result === "string" ? result : JSON.stringify(result);
-  if (!config.llm.isLocalEndpoint || raw.length <= 7500) return raw;
-  return `${raw.slice(0, 7500)}…[truncated for local LLM]`;
+  const cap = config.llm.toolResultMaxChars ?? 7500;
+  if (!config.llm.isLocalEndpoint || raw.length <= cap) return raw;
+  return `${raw.slice(0, cap)}…[truncated for local LLM]`;
 }
 
 /** True while any agentLoop is executing — crons skip new work to avoid interleaved steps / double screening. */
@@ -67,7 +68,7 @@ export function isAgentLoopRunning() {
 function isTransientLlmError(err) {
   const msg = (err?.message || String(err)).toLowerCase();
   return (
-    /unexpected end of json|invalid json|econnreset|etimedout|socket hang up|fetch failed|network|aborted|premature close/.test(
+    /unexpected end of json|invalid json|econnreset|etimedout|timed out|socket hang up|fetch failed|network|aborted|premature close/.test(
       msg
     ) || err?.code === "ECONNRESET"
   );
@@ -92,12 +93,14 @@ const PREMIUM_API_KEY =
 function makeClient(baseURL, apiKey) {
   const isAnthropic = baseURL.includes("anthropic.com");
   const openRouterCompat = /openrouter\.ai/i.test(baseURL);
-  // Ollama / LM Studio on CPU can exceed 5m per completion; OpenRouter is usually fast enough at 5m.
+  // Ollama / LM Studio on CPU: allow long generations (tunable). OpenRouter: 5m is usually enough.
+  const localTimeoutMs =
+    parseInt(process.env.LLM_HTTP_TIMEOUT_MS || "", 10) || 32 * 60 * 1000;
   const timeoutMs = isAnthropic
     ? 10 * 60 * 1000
     : openRouterCompat
       ? 5 * 60 * 1000
-      : 22 * 60 * 1000;
+      : localTimeoutMs;
   return {
     client: new OpenAI({
       baseURL,

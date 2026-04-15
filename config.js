@@ -70,6 +70,17 @@ export const OPENROUTER_DEFAULT_MODEL = (
  */
 export const LLM_IS_LOCAL_ENDPOINT = !USE_OPENROUTER_DEFAULT;
 
+/**
+ * Small VPS preset (~4 cores / 8 GiB RAM + Ollama on CPU): tighter LLM caps and slimmer preloads
+ * so screening/management finish inside Ollama’s default ctx without 20+ minute hangs.
+ * Set MERIDIAN_VPS_PROFILE=small (or MERIDIAN_VPS_SMALL=1) alongside LLM_BASE_URL=…Ollama….
+ */
+const VPS_SMALL =
+  process.env.MERIDIAN_VPS_PROFILE === "small" ||
+  process.env.MERIDIAN_VPS_PROFILE === "4c8g" ||
+  process.env.MERIDIAN_VPS_SMALL === "1" ||
+  process.env.MERIDIAN_VPS_SMALL === "true";
+
 /** MERIDIAN_CAVEMAN / LLM_TERSE / user-config terseCaveman — only applies to local endpoints (Ollama, LM Studio). */
 function envTriState(name) {
   const v = process.env[name];
@@ -97,15 +108,31 @@ function computeTerseCaveman() {
 }
 
 const LOCAL_MAX_STEPS =
-  parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) || 10;
+  parseInt(process.env.LLM_LOCAL_MAX_STEPS || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 8 : 10);
 const LOCAL_SCREENING_MAX_STEPS =
-  parseInt(process.env.LLM_LOCAL_SCREENING_MAX_STEPS || "", 10) || 12;
+  parseInt(process.env.LLM_LOCAL_SCREENING_MAX_STEPS || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 8 : 12);
 const LOCAL_MAX_TOKENS =
-  parseInt(process.env.LLM_LOCAL_MAX_TOKENS || "", 10) || 1536;
+  parseInt(process.env.LLM_LOCAL_MAX_TOKENS || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 1024 : 1536);
 /** Pools pre-fetched + enriched for screening prompt (fewer = less context for weak models). */
 const SCREENING_CANDIDATE_LIMIT =
   parseInt(process.env.LLM_SCREENING_CANDIDATE_LIMIT || "", 10) ||
   (LLM_IS_LOCAL_ENDPOINT ? 2 : 5);
+
+const SCREENING_NARRATIVE_MAX =
+  parseInt(process.env.MERIDIAN_SCREENING_NARRATIVE_MAX || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 100 : LLM_IS_LOCAL_ENDPOINT ? 180 : 500);
+
+const SCREENING_HOLDERS_LIMIT =
+  parseInt(process.env.MERIDIAN_SCREENING_HOLDERS_LIMIT || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 35 : 100);
+
+/** Max JSON chars per tool result sent to local LLM (full payload on cloud). */
+const LOCAL_TOOL_RESULT_MAX =
+  parseInt(process.env.MERIDIAN_TOOL_RESULT_MAX || "", 10) ||
+  (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT ? 4000 : LLM_IS_LOCAL_ENDPOINT ? 7500 : 10_000_000);
 
 const LLM_BUDGET_MODEL_DEFAULT =
   process.env.LLM_BUDGET_MODEL
@@ -191,6 +218,15 @@ export const config = {
         : Math.max(u.maxSteps ?? 20, 32)),
     /** Pre-loaded pools in screening cycle (index.js). */
     screeningCandidateLimit: u.screeningCandidateLimit ?? SCREENING_CANDIDATE_LIMIT,
+    /** Max chars of token narrative embedded per pool in screening preload (index.js). */
+    screeningNarrativeMaxChars:
+      u.screeningNarrativeMaxChars ?? SCREENING_NARRATIVE_MAX,
+    /** getTokenHolders limit during screening preload (index.js). */
+    screeningHoldersLimit: u.screeningHoldersLimit ?? SCREENING_HOLDERS_LIMIT,
+    /** Truncate tool JSON returned to the model (agent.js); cloud uses a very high ceiling. */
+    toolResultMaxChars: u.toolResultMaxChars ?? LOCAL_TOOL_RESULT_MAX,
+    /** True when MERIDIAN_VPS_PROFILE=small (or MERIDIAN_VPS_SMALL=1) — see startup log. */
+    vpsLowResource: !!(VPS_SMALL && LLM_IS_LOCAL_ENDPOINT),
     /** Set when using Ollama/LM Studio — index.js shortens narrative preloads. */
     isLocalEndpoint: LLM_IS_LOCAL_ENDPOINT,
     /** Prompt suffix: minimal filler, short final replies (local LLM only). */

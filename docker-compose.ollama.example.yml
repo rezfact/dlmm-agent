@@ -1,6 +1,9 @@
 # Example: run Ollama beside Meridian with bounded RAM (tune for your VPS).
 # Copy/adjust, then: docker compose -f docker-compose.ollama.example.yml up -d
 #
+# ~4 vCPU / 8 GiB / NVMe: prefer `mem_limit` ≈3–3.5G for Ollama so Meridian (~1.5G) + OS + optional
+# IPFS stay stable. In `.env` set MERIDIAN_VPS_PROFILE=small when using Ollama for SCREENER.
+#
 # Point Meridian at this instance, e.g.:
 #   - Ollama on same host as Meridian: LLM_BASE_URL=http://host.docker.internal:11434/v1
 #   - Ollama on same compose network: LLM_BASE_URL=http://ollama:11434/v1  (+ attach meridian to this network)
@@ -17,9 +20,16 @@ services:
     environment:
       # Keep one model loaded to reduce RAM churn on small VPS
       OLLAMA_MAX_LOADED_MODELS: "1"
-    # Docker Compose (non-Swarm): ~8 GiB host: leave room for Meridian (~1.5G) + IPFS + OS (see README).
-    mem_limit: 4g
-    mem_reservation: 2g
+      OLLAMA_NUM_PARALLEL: "1"
+    # Compose v2.24+ applies limits to `docker compose up` (see meridian docker-compose.yml)
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0"
+          memory: 3500M
+        reservations:
+          cpus: "0.25"
+          memory: 1500M
 
 volumes:
   ollama_data:

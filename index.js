@@ -35,8 +35,14 @@ log(
 if (config.llm.isLocalEndpoint) {
   log(
     "startup",
-    `Local LLM caps: maxSteps=${config.llm.maxSteps} screeningMaxSteps=${config.llm.screeningMaxSteps} candidates=${config.llm.screeningCandidateLimit} maxTokens=${config.llm.maxTokens}`
+    `Local LLM caps: maxSteps=${config.llm.maxSteps} screeningMaxSteps=${config.llm.screeningMaxSteps} candidates=${config.llm.screeningCandidateLimit} maxTokens=${config.llm.maxTokens} holdersPreload=${config.llm.screeningHoldersLimit} narrMax=${config.llm.screeningNarrativeMaxChars}`
   );
+  if (config.llm.vpsLowResource) {
+    log(
+      "startup",
+      "MERIDIAN_VPS_PROFILE=small — tuned for ~4C/8GiB + Ollama on CPU (set MERIDIAN_MANAGER_OPENROUTER=1 + OPENROUTER_API_KEY for fast MANAGER closes)"
+    );
+  }
 }
 const caveLevel = getMeridianCavemanRuntimeLevel();
 if (caveLevel !== "off") {
@@ -252,7 +258,7 @@ After all positions, add one summary line:
 💼 [N] positions | $[total_value] | fees today: $[sum_unclaimed] | [any notable action taken]
 
 If nothing required action: one line "No action — positions within rules; no claims above threshold."
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 4096);
+      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, config.llm.isLocalEndpoint ? config.llm.maxTokens : 4096);
       mgmtReport = content;
     } catch (error) {
       log("cron_error", `Management cycle failed: ${error.message}`);
@@ -342,12 +348,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const candidates = topCandidates?.candidates || topCandidates?.pools || [];
 
       const candidateBlocks = [];
-      const narrMax = config.llm.isLocalEndpoint ? 180 : 500;
+      const narrMax = config.llm.screeningNarrativeMaxChars ?? (config.llm.isLocalEndpoint ? 180 : 500);
+      const holderLimit = config.llm.screeningHoldersLimit ?? 100;
       for (const pool of candidates.slice(0, candLimit)) {
         const mint = pool.base?.mint;
         const [smartWallets, holders, narrative, tokenInfo, poolMemory] = await Promise.allSettled([
             checkSmartWalletsOnPool({ pool_address: pool.pool }),
-            mint ? getTokenHolders({ mint, limit: 100 }) : Promise.resolve(null),
+            mint ? getTokenHolders({ mint, limit: holderLimit }) : Promise.resolve(null),
             mint ? getTokenNarrative({ mint }) : Promise.resolve(null),
             mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
             Promise.resolve(recallForPool(pool.pool)),
@@ -443,7 +450,7 @@ STEPS:
         [],
         "SCREENER",
         config.llm.screeningModel,
-        Math.max(2048, config.llm.maxTokens)
+        config.llm.isLocalEndpoint ? config.llm.maxTokens : Math.max(2048, config.llm.maxTokens)
       );
       screenReport = finalizeScreeningReport(content, deploySucceeded === true);
     } catch (error) {
