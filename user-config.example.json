@@ -1,5 +1,5 @@
 {
-  "_comment": "Capital: 0.2 SOL floor deploy × 2 slots — set minSolToOpen ≳ 2×deployAmountSol + gasReserve before opening another position.",
+  "_comment": "Capital: 0.2 SOL floor deploy × 2 slots — set minSolToOpen ≳ 2×deployAmountSol + gasReserve before opening another position. On a small VPS with MERIDIAN_VPS_PROFILE=small + Ollama, large maxSteps / maxTokens in this file are auto-capped at startup — see .env.example.",
   "preset": "custom",
   "rpcUrl": "https://pump.helius-rpc.com",
   "deployAmountSol": 0.2,

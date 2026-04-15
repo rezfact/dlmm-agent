@@ -42,6 +42,10 @@ if (config.llm.isLocalEndpoint) {
       "startup",
       "MERIDIAN_VPS_PROFILE=small — tuned for ~4C/8GiB + Ollama on CPU (set MERIDIAN_MANAGER_OPENROUTER=1 + OPENROUTER_API_KEY for fast MANAGER closes)"
     );
+    const caps = config.llm.vpsCapWarnings;
+    if (caps && caps.length > 0) {
+      for (const line of caps) log("startup", `VPS cap: ${line}`);
+    }
   }
 }
 const caveLevel = getMeridianCavemanRuntimeLevel();

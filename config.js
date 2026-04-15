@@ -138,6 +138,111 @@ const LLM_BUDGET_MODEL_DEFAULT =
   process.env.LLM_BUDGET_MODEL
   ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL);
 
+/** Integer clamp for VPS caps and sane bounds. */
+function clampInt(n, lo, hi) {
+  const x = Math.floor(Number(n));
+  if (!Number.isFinite(x)) return lo;
+  return Math.max(lo, Math.min(hi, x));
+}
+
+/** Resolve LLM fields; when MERIDIAN_VPS_PROFILE=small + Ollama, clamp user-config so old presets cannot starve CPU/RAM. */
+function resolveLlmForConfig() {
+  const vpsCapWarnings = [];
+  const uMax = u.maxSteps != null ? Number(u.maxSteps) : NaN;
+  const uScr = u.screeningMaxSteps != null ? Number(u.screeningMaxSteps) : NaN;
+  const uTok = u.maxTokens != null ? Number(u.maxTokens) : NaN;
+
+  let maxSteps = Number.isFinite(uMax)
+    ? Math.floor(uMax)
+    : LLM_IS_LOCAL_ENDPOINT
+      ? LOCAL_MAX_STEPS
+      : 20;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = maxSteps;
+    maxSteps = clampInt(maxSteps, 4, 10);
+    if (prev !== maxSteps) vpsCapWarnings.push(`maxSteps ${prev}→${maxSteps} (VPS small cap)`);
+  }
+
+  let screeningMaxSteps;
+  if (!LLM_IS_LOCAL_ENDPOINT) {
+    screeningMaxSteps = Number.isFinite(uScr) && u.screeningMaxSteps != null
+      ? Math.floor(uScr)
+      : Math.max(Number.isFinite(uMax) ? Math.floor(uMax) : 20, 32);
+  } else {
+    const fallback = Math.max(maxSteps, LOCAL_SCREENING_MAX_STEPS);
+    screeningMaxSteps = Number.isFinite(uScr) && u.screeningMaxSteps != null
+      ? Math.floor(uScr)
+      : fallback;
+    if (VPS_SMALL) {
+      const prev = screeningMaxSteps;
+      screeningMaxSteps = clampInt(screeningMaxSteps, 4, 10);
+      if (prev !== screeningMaxSteps) {
+        vpsCapWarnings.push(`screeningMaxSteps ${prev}→${screeningMaxSteps} (VPS small cap)`);
+      }
+    }
+  }
+
+  let maxTokens = Number.isFinite(uTok)
+    ? Math.floor(uTok)
+    : LLM_IS_LOCAL_ENDPOINT
+      ? LOCAL_MAX_TOKENS
+      : 4096;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = maxTokens;
+    maxTokens = clampInt(maxTokens, 256, 1280);
+    if (prev !== maxTokens) vpsCapWarnings.push(`maxTokens ${prev}→${maxTokens} (VPS small cap)`);
+  }
+
+  let screeningCandidateLimit = u.screeningCandidateLimit ?? SCREENING_CANDIDATE_LIMIT;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = Math.floor(Number(screeningCandidateLimit)) || SCREENING_CANDIDATE_LIMIT;
+    screeningCandidateLimit = clampInt(prev, 1, 3);
+    if (prev !== screeningCandidateLimit) {
+      vpsCapWarnings.push(`screeningCandidateLimit ${prev}→${screeningCandidateLimit} (VPS small cap)`);
+    }
+  }
+
+  let screeningNarrativeMaxChars = u.screeningNarrativeMaxChars ?? SCREENING_NARRATIVE_MAX;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = Math.floor(Number(screeningNarrativeMaxChars)) || SCREENING_NARRATIVE_MAX;
+    screeningNarrativeMaxChars = clampInt(prev, 40, 300);
+    if (prev !== screeningNarrativeMaxChars) {
+      vpsCapWarnings.push(`screeningNarrativeMaxChars ${prev}→${screeningNarrativeMaxChars} (VPS small cap)`);
+    }
+  }
+
+  let screeningHoldersLimit = u.screeningHoldersLimit ?? SCREENING_HOLDERS_LIMIT;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = Math.floor(Number(screeningHoldersLimit)) || SCREENING_HOLDERS_LIMIT;
+    screeningHoldersLimit = clampInt(prev, 15, 55);
+    if (prev !== screeningHoldersLimit) {
+      vpsCapWarnings.push(`screeningHoldersLimit ${prev}→${screeningHoldersLimit} (VPS small cap)`);
+    }
+  }
+
+  let toolResultMaxChars = u.toolResultMaxChars ?? LOCAL_TOOL_RESULT_MAX;
+  if (VPS_SMALL && LLM_IS_LOCAL_ENDPOINT) {
+    const prev = Math.floor(Number(toolResultMaxChars)) || LOCAL_TOOL_RESULT_MAX;
+    toolResultMaxChars = clampInt(prev, 2000, 5000);
+    if (prev !== toolResultMaxChars) {
+      vpsCapWarnings.push(`toolResultMaxChars ${prev}→${toolResultMaxChars} (VPS small cap)`);
+    }
+  }
+
+  return {
+    maxSteps,
+    screeningMaxSteps,
+    maxTokens,
+    screeningCandidateLimit,
+    screeningNarrativeMaxChars,
+    screeningHoldersLimit,
+    toolResultMaxChars,
+    vpsCapWarnings,
+  };
+}
+
+const _llmResolved = resolveLlmForConfig();
+
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
@@ -201,30 +306,24 @@ export const config = {
   // ─── LLM Settings ──────────────────────
   llm: {
     temperature: u.temperature ?? 0.373,
-    maxTokens:
-      u.maxTokens
-      ?? (LLM_IS_LOCAL_ENDPOINT ? LOCAL_MAX_TOKENS : 4096),
-    maxSteps:
-      u.maxSteps
-      ?? (LLM_IS_LOCAL_ENDPOINT ? LOCAL_MAX_STEPS : 20),
+    maxTokens: _llmResolved.maxTokens,
+    maxSteps: _llmResolved.maxSteps,
     /**
      * Cloud: high ceiling for flaky free APIs + long tool chains.
      * Local (Ollama): keep low — each step can take minutes on CPU.
+     * With MERIDIAN_VPS_PROFILE=small, user-config highs are clamped (see vpsCapWarnings).
      */
-    screeningMaxSteps:
-      u.screeningMaxSteps
-      ?? (LLM_IS_LOCAL_ENDPOINT
-        ? Math.max(u.maxSteps ?? LOCAL_MAX_STEPS, LOCAL_SCREENING_MAX_STEPS)
-        : Math.max(u.maxSteps ?? 20, 32)),
+    screeningMaxSteps: _llmResolved.screeningMaxSteps,
     /** Pre-loaded pools in screening cycle (index.js). */
-    screeningCandidateLimit: u.screeningCandidateLimit ?? SCREENING_CANDIDATE_LIMIT,
+    screeningCandidateLimit: _llmResolved.screeningCandidateLimit,
     /** Max chars of token narrative embedded per pool in screening preload (index.js). */
-    screeningNarrativeMaxChars:
-      u.screeningNarrativeMaxChars ?? SCREENING_NARRATIVE_MAX,
+    screeningNarrativeMaxChars: _llmResolved.screeningNarrativeMaxChars,
     /** getTokenHolders limit during screening preload (index.js). */
-    screeningHoldersLimit: u.screeningHoldersLimit ?? SCREENING_HOLDERS_LIMIT,
+    screeningHoldersLimit: _llmResolved.screeningHoldersLimit,
     /** Truncate tool JSON returned to the model (agent.js); cloud uses a very high ceiling. */
-    toolResultMaxChars: u.toolResultMaxChars ?? LOCAL_TOOL_RESULT_MAX,
+    toolResultMaxChars: _llmResolved.toolResultMaxChars,
+    /** Non-empty if MERIDIAN_VPS_PROFILE=small clamped user-config.json (logged at startup). */
+    vpsCapWarnings: _llmResolved.vpsCapWarnings,
     /** True when MERIDIAN_VPS_PROFILE=small (or MERIDIAN_VPS_SMALL=1) — see startup log. */
     vpsLowResource: !!(VPS_SMALL && LLM_IS_LOCAL_ENDPOINT),
     /** Set when using Ollama/LM Studio — index.js shortens narrative preloads. */
