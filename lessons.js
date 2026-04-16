@@ -16,6 +16,18 @@ const USER_CONFIG_PATH = dataPath("user-config.json");
 const LESSONS_FILE = dataPath("lessons.json");
 const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
+const MAX_MANUAL_LESSON_LENGTH = 400;
+
+function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
+  if (text == null) return null;
+  const cleaned = String(text)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[<>`]/g, "")
+    .trim()
+    .slice(0, maxLen);
+  return cleaned || null;
+}
 
 function load() {
   if (!fs.existsSync(LESSONS_FILE)) {
@@ -59,6 +71,22 @@ function save(data) {
 export async function recordPerformance(perf) {
   const data = load();
 
+  // Guard against unit-mixed records where a SOL-sized final value is
+  // accidentally written into a USD field (e.g. final_value_usd = 2 for a 2 SOL close).
+  const suspiciousUnitMix =
+    Number.isFinite(perf.initial_value_usd) &&
+    Number.isFinite(perf.final_value_usd) &&
+    Number.isFinite(perf.amount_sol) &&
+    perf.initial_value_usd >= 20 &&
+    perf.amount_sol >= 0.25 &&
+    perf.final_value_usd > 0 &&
+    perf.final_value_usd <= perf.amount_sol * 2;
+
+  if (suspiciousUnitMix) {
+    log("lessons_warn", `Skipped suspicious performance record for ${perf.pool_name || perf.pool}: initial=${perf.initial_value_usd}, final=${perf.final_value_usd}, amount_sol=${perf.amount_sol}`);
+    return;
+  }
+
   const pnl_usd = (perf.final_value_usd + perf.fees_earned_usd) - perf.initial_value_usd;
   const pnl_pct = perf.initial_value_usd > 0
     ? (pnl_usd / perf.initial_value_usd) * 100
@@ -66,6 +94,18 @@ export async function recordPerformance(perf) {
   const range_efficiency = perf.minutes_held > 0
     ? (perf.minutes_in_range / perf.minutes_held) * 100
     : 0;
+
+  const closeReasonText = String(perf.close_reason || "").toLowerCase();
+  const suspiciousAbsurdClosedPnl =
+    Number.isFinite(pnl_pct) &&
+    perf.initial_value_usd >= 20 &&
+    pnl_pct <= -90 &&
+    !closeReasonText.includes("stop loss");
+
+  if (suspiciousAbsurdClosedPnl) {
+    log("lessons_warn", `Skipped absurd closed PnL record for ${perf.pool_name || perf.pool}: pnl_pct=${pnl_pct.toFixed(2)} reason=${perf.close_reason}`);
+    return;
+  }
 
   const entry = {
     ...perf,
@@ -111,6 +151,15 @@ export async function recordPerformance(perf) {
     if (result?.changes && Object.keys(result.changes).length > 0) {
       reloadScreeningThresholds();
       log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+    }
+
+    // Darwinian signal weight recalculation
+    if (config.darwin?.enabled) {
+      const { recalculateWeights } = await import("./signal-weights.js");
+      const wResult = recalculateWeights(data.performance, config);
+      if (wResult.changes.length > 0) {
+        log("evolve", `Darwin: adjusted ${wResult.changes.length} signal weight(s)`);
+      }
     }
   }
 
@@ -379,10 +428,12 @@ function nudge(current, target, maxChange) {
  * @param {string}   opts.role   - "SCREENER" | "MANAGER" | "GENERAL" | null (all roles)
  */
 export function addLesson(rule, tags = [], { pinned = false, role = null } = {}) {
+  const safeRule = sanitizeLessonText(rule);
+  if (!safeRule) return;
   const data = load();
   data.lessons.push({
     id: Date.now(),
-    rule,
+    rule: safeRule,
     tags,
     outcome: "manual",
     pinned: !!pinned,
@@ -390,7 +441,7 @@ export function addLesson(rule, tags = [], { pinned = false, role = null } = {})
     created_at: new Date().toISOString(),
   });
   save(data);
-  log("lessons", `Manual lesson added${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${rule}`);
+  log("lessons", `Manual lesson added${pinned ? " [PINNED]" : ""}${role ? ` [${role}]` : ""}: ${safeRule}`);
 }
 
 /**

@@ -3,7 +3,7 @@ import cron from "node-cron";
 import readline from "readline";
 import { agentLoop, isAgentLoopRunning } from "./agent.js";
 import { log } from "./logger.js";
-import { getMyPositions, getPositionPnl, closePosition } from "./tools/dlmm.js";
+import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
@@ -20,11 +20,11 @@ import {
   isEnabled as telegramEnabled,
 } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
-import { recordPositionSnapshot, recallForPool } from "./pool-memory.js";
+import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-import { getTokenHolders, getTokenNarrative, getTokenInfo } from "./tools/token.js";
+import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -68,8 +68,8 @@ if (LLM_SAVER) {
   log("startup", "MERIDIAN_LLM_SAVER=1 — screening only on screeningIntervalMin cron (not every management tick)");
 }
 
-const TP_PCT  = config.management.takeProfitFeePct;
-const DEPLOY  = config.management.deployAmountSol;
+const TP_PCT = config.management.takeProfitFeePct;
+const DEPLOY = config.management.deployAmountSol;
 
 // ═══════════════════════════════════════════
 //  CYCLE TIMERS
@@ -93,8 +93,8 @@ function formatCountdown(seconds) {
 }
 
 function buildPrompt() {
-  const mgmt  = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
-  const scrn  = formatCountdown(nextRunIn(timers.screeningLastRun,  config.schedule.screeningIntervalMin));
+  const mgmt = formatCountdown(nextRunIn(timers.managementLastRun, config.schedule.managementIntervalMin));
+  const scrn = formatCountdown(nextRunIn(timers.screeningLastRun, config.schedule.screeningIntervalMin));
   return `[manage: ${mgmt} | screen: ${scrn}]\n> `;
 }
 
@@ -105,6 +105,73 @@ let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
+let _pollTriggeredAt = 0; // epoch ms — cooldown for poller-triggered management
+const _peakConfirmTimers = new Map();
+const _trailingDropConfirmTimers = new Map();
+const TRAILING_PEAK_CONFIRM_DELAY_MS = 15_000;
+const TRAILING_PEAK_CONFIRM_TOLERANCE = 0.85;
+const TRAILING_DROP_CONFIRM_DELAY_MS = 15_000;
+const TRAILING_DROP_CONFIRM_TOLERANCE_PCT = 1.0;
+
+/** Strip <think>...</think> reasoning blocks that some models leak into output */
+function stripThink(text) {
+  if (!text) return text;
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+function sanitizeUntrustedPromptText(text, maxLen = 500) {
+  if (!text) return null;
+  const cleaned = String(text)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[<>`]/g, "")
+    .trim()
+    .slice(0, maxLen);
+  return cleaned ? JSON.stringify(cleaned) : null;
+}
+
+function schedulePeakConfirmation(positionAddress) {
+  if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
+
+  const timer = setTimeout(async () => {
+    _peakConfirmTimers.delete(positionAddress);
+    try {
+      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      const position = result?.positions?.find((p) => p.position === positionAddress);
+      resolvePendingPeak(positionAddress, position?.pnl_pct ?? null, TRAILING_PEAK_CONFIRM_TOLERANCE);
+    } catch (error) {
+      log("state_warn", `Peak confirmation failed for ${positionAddress}: ${error.message}`);
+    }
+  }, TRAILING_PEAK_CONFIRM_DELAY_MS);
+
+  _peakConfirmTimers.set(positionAddress, timer);
+}
+
+function scheduleTrailingDropConfirmation(positionAddress) {
+  if (!positionAddress || _trailingDropConfirmTimers.has(positionAddress)) return;
+
+  const timer = setTimeout(async () => {
+    _trailingDropConfirmTimers.delete(positionAddress);
+    try {
+      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      const position = result?.positions?.find((p) => p.position === positionAddress);
+      const resolved = resolvePendingTrailingDrop(
+        positionAddress,
+        position?.pnl_pct ?? null,
+        config.management.trailingDropPct,
+        TRAILING_DROP_CONFIRM_TOLERANCE_PCT,
+      );
+      if (resolved?.confirmed) {
+        log("state", `[Trailing recheck] Confirmed trailing exit for ${positionAddress} — triggering management`);
+        runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Trailing recheck management failed: ${e.message}`));
+      }
+    } catch (error) {
+      log("state_warn", `Trailing drop confirmation failed for ${positionAddress}: ${error.message}`);
+    }
+  }, TRAILING_DROP_CONFIRM_DELAY_MS);
+
+  _trailingDropConfirmTimers.set(positionAddress, timer);
+}
 
 async function runBriefing() {
   log("cron", "Starting morning briefing");
@@ -140,6 +207,7 @@ async function maybeRunMissedBriefing() {
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
+  if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
   _cronTasks = [];
 }
 
@@ -151,6 +219,9 @@ export async function runManagementCycle({ silent = false } = {}) {
   log("cron", `Starting management cycle [model: ${config.llm.managementModel}]`);
   let mgmtReport = null;
   let positions = [];
+  let liveMessage = null;
+  const screeningCooldownMs = 5 * 60 * 1000;
+
   try {
       // Pre-load all positions + PnL in parallel — LLM gets everything, no fetch steps needed
       const livePositions = await getMyPositions({ force: true }).catch(() => null);
@@ -166,16 +237,24 @@ export async function runManagementCycle({ silent = false } = {}) {
         return;
       }
 
-      // Enforce management interval based on most volatile open position
-      const maxVolatility = positions.reduce((max, p) => {
-        const tracked = getTrackedPosition(p.position);
-        return Math.max(max, tracked?.volatility ?? 0);
-      }, 0);
-      const targetInterval = maxVolatility >= 5 ? 3 : maxVolatility >= 2 ? 5 : 10;
-      if (config.schedule.managementIntervalMin !== targetInterval) {
-        config.schedule.managementIntervalMin = targetInterval;
-        log("cron", `Management interval adjusted to ${targetInterval}m (max volatility: ${maxVolatility})`);
-        if (cronStarted) startCronJobs();
+      // Sanity-check PnL against tracked initial deposit — API sometimes returns bad data
+      // giving -99% PnL which would incorrectly trigger stop loss
+      const tracked = getTrackedPosition(p.position);
+      const pnlSuspect = (() => {
+        if (p.pnl_pct == null) return false;
+        if (p.pnl_pct > -90) return false; // only flag extreme negatives
+        // Cross-check: if we have a tracked deposit and current value isn't near zero, it's bad data
+        if (tracked?.amount_sol && (p.total_value_usd ?? 0) > 0.01) {
+          log("cron_warn", `Suspect PnL for ${p.pair}: ${p.pnl_pct}% but position still has value — skipping PnL rules`);
+          return true;
+        }
+        return false;
+      })();
+
+      // Rule 1: stop loss
+      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 1, reason: "stop loss" });
+        continue;
       }
 
       // Also trigger screening if under max — skipped in LLM saver (screening cron only)
@@ -187,45 +266,84 @@ export async function runManagementCycle({ silent = false } = {}) {
           runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
         }
       }
+      // Rule 3: pumped far above range
+      if (p.active_bin != null && p.upper_bin != null &&
+          p.active_bin > p.upper_bin + config.management.outOfRangeBinsToClose) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
+        continue;
+      }
+      // Rule 4: stale above range
+      if (p.active_bin != null && p.upper_bin != null &&
+          p.active_bin > p.upper_bin &&
+          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
+        continue;
+      }
+      // Rule 5: fee yield too low
+      if (p.fee_per_tvl_24h != null &&
+          p.fee_per_tvl_24h < config.management.minFeePerTvl24h &&
+          (p.age_minutes ?? 0) >= 60) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: "low yield" });
+        continue;
+      }
+      // Claim rule
+      if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
+        actionMap.set(p.position, { action: "CLAIM" });
+        continue;
+      }
+      actionMap.set(p.position, { action: "STAY" });
+    }
 
-      // Snapshot + PnL fetch in parallel for all positions
-      const positionData = await Promise.all(positions.map(async (p) => {
-        recordPositionSnapshot(p.pool, p);
-        const pnl = await getPositionPnl({ pool_address: p.pool, position_address: p.position }).catch(() => null);
-        const recall = recallForPool(p.pool);
-        return { ...p, pnl, recall };
-      }));
+    // ── Build JS report ──────────────────────────────────────────────
+    const totalValue = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
+    const totalUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
 
-      // Build pre-loaded position blocks for the LLM
-      const positionBlocks = positionData.map((p) => {
-        const pnl = p.pnl;
-        const lines = [
+    const reportLines = positionData.map((p) => {
+      const act = actionMap.get(p.position);
+      const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
+      const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
+      const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
+      const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
+      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
+      if (p.instruction) line += `\nNote: "${p.instruction}"`;
+      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
+      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
+      if (act.action === "CLAIM") line += `\n→ Claiming fees`;
+      return line;
+    });
+
+    const needsAction = [...actionMap.values()].filter(a => a.action !== "STAY");
+    const actionSummary = needsAction.length > 0
+      ? needsAction.map(a => a.action === "INSTRUCTION" ? "EVAL instruction" : `${a.action}${a.reason ? ` (${a.reason})` : ""}`).join(", ")
+      : "no action";
+
+    const cur = config.management.solMode ? "◎" : "$";
+    mgmtReport = reportLines.join("\n\n") +
+      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+
+    // ── Call LLM only if action needed ──────────────────────────────
+    const actionPositions = positionData.filter(p => {
+      const a = actionMap.get(p.position);
+      return a.action !== "STAY";
+    });
+
+    if (actionPositions.length > 0) {
+      log("cron", `Management: ${actionPositions.length} action(s) needed — invoking LLM [model: ${config.llm.managementModel}]`);
+
+      const actionBlocks = actionPositions.map((p) => {
+        const act = actionMap.get(p.position);
+        return [
           `POSITION: ${p.pair} (${p.position})`,
           `  pool: ${p.pool}`,
-          `  age: ${p.age_minutes ?? "?"}m | in_range: ${p.in_range} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
-          pnl ? `  pnl_pct: ${pnl.pnl_pct}% | pnl_usd: $${pnl.pnl_usd} | unclaimed_fees: $${pnl.unclaimed_fee_usd} | claimed_fees: $${Math.max(0, (pnl.all_time_fees_usd || 0) - (pnl.unclaimed_fee_usd || 0)).toFixed(2)} | value: $${pnl.current_value_usd} | fee_per_tvl_24h: ${pnl.fee_per_tvl_24h ?? "?"}%` : `  pnl: fetch failed`,
-          pnl ? `  bins: lower=${pnl.lower_bin} upper=${pnl.upper_bin} active=${pnl.active_bin}` : null,
+          `  action: ${act.action}${act.rule && act.rule !== "exit" ? ` — Rule ${act.rule}: ${act.reason}` : ""}${act.rule === "exit" ? ` — ⚡ Trailing TP: ${act.reason}` : ""}`,
+          `  pnl_pct: ${p.pnl_pct}% | unclaimed_fees: ${cur}${p.unclaimed_fees_usd} | value: ${cur}${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
+          `  bins: lower=${p.lower_bin} upper=${p.upper_bin} active=${p.active_bin} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
           p.instruction ? `  instruction: "${p.instruction}"` : null,
-          p.recall ? `  memory: ${p.recall}` : null,
-        ].filter(Boolean);
-        return lines.join("\n");
+        ].filter(Boolean).join("\n");
       }).join("\n\n");
 
-      // Hive mind pattern consensus (if enabled)
-      let hivePatterns = "";
-      try {
-        const hiveMind = await import("./hive-mind.js");
-        if (hiveMind.isEnabled()) {
-          const patterns = await hiveMind.queryPatternConsensus();
-          const significant = (patterns || []).filter(p => p.count >= 10);
-          if (significant.length > 0) {
-            hivePatterns = `\nHIVE MIND PATTERNS (supplementary):\n${significant.slice(0, 3).map(p => `[HIVE] ${p.strategy}: ${p.win_rate}% win, ${p.avg_pnl}% avg PnL (${p.count} deploys)`).join("\n")}\n`;
-          }
-        }
-      } catch { /* hive is best-effort */ }
-
       const { content } = await agentLoop(`
-MANAGEMENT CYCLE — ${positions.length} position(s)
+MANAGEMENT ACTION REQUIRED — ${actionPositions.length} position(s)
 
 TELEGRAM: Your reply is pasted to the operator's phone. Write a concise STATUS REPORT only.
 - Do NOT ask questions. Do NOT offer choices ("Would you like…").
@@ -234,18 +352,24 @@ TELEGRAM: Your reply is pasted to the operator's phone. Write a concise STATUS R
 PRE-LOADED POSITION DATA (no fetching needed):
 ${positionBlocks}${hivePatterns}
 
-HARD CLOSE RULES — apply in order, first match wins:
-1. instruction set AND condition met → CLOSE (highest priority)
-2. instruction set AND condition NOT met → HOLD, skip remaining rules
-3. pnl_pct <= ${config.management.emergencyPriceDropPct}% → CLOSE (stop loss)
-4. pnl_pct >= ${config.management.takeProfitFeePct}% → CLOSE (take profit)
-5. active_bin > upper_bin + ${config.management.outOfRangeBinsToClose} → CLOSE (pumped far above range)
-6. active_bin > upper_bin AND oor_minutes >= ${config.management.outOfRangeWaitMinutes} → CLOSE (stale above range)
-7. fee_per_tvl_24h < ${config.management.minFeePerTvl24h} AND age_minutes >= 60 → CLOSE (fee yield too low)
+RULES:
+- CLOSE: call close_position only — it handles fee claiming internally, do NOT call claim_fees first
+- CLAIM: call claim_fees with position address
+- INSTRUCTION: evaluate the instruction condition. If met → close_position. If not → HOLD, do nothing.
+- ⚡ exit alerts: close immediately, no exceptions
 
-When closing: call close_position only — it handles fee claiming internally, do NOT call claim_fees first.
+Execute the required actions. Do NOT re-evaluate CLOSE/CLAIM — rules already applied. Just execute.
+After executing, write a brief one-line result per position.
+      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
+        onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
+        onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
+      });
 
-CLAIM RULE: If unclaimed_fee_usd >= ${config.management.minClaimAmount}, call claim_fees. Do not use any other threshold.
+      mgmtReport += `\n\n${content}`;
+    } else {
+      log("cron", "Management: all positions STAY — skipping LLM");
+      await liveMessage?.note("No tool actions needed.");
+    }
 
 INSTRUCTIONS:
 All data is pre-loaded above — do NOT call get_my_positions or get_position_pnl.
@@ -277,6 +401,7 @@ If nothing required action: one line "No action — positions within rules; no c
         }
       }
     }
+  }
   return mgmtReport;
 }
 
@@ -400,22 +525,39 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
           candidateBlocks.push(lines.join("\n"));
       }
+      if (launchpad && config.screening.blockedLaunchpads.includes(launchpad)) {
+        log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
+        filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
+        return false;
+      }
+      const botPct = ti?.audit?.bot_holders_pct;
+      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
+      if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
+        log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
+        filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` });
+        return false;
+      }
+      return true;
+    });
 
-      let candidateContext = candidateBlocks.length > 0
-        ? `\nPRE-LOADED CANDIDATE ANALYSIS (smart wallets, holders, narrative already fetched):\n${candidateBlocks.join("\n\n")}\n`
-        : "";
+    if (passing.length === 0) {
+      const examples = filteredOut.slice(0, 3)
+        .map((entry) => `- ${entry.name}: ${entry.reason}`)
+        .join("\n");
+      const combined = filteredOut.length > 0 ? filteredOut : earlyFilteredExamples;
+      const combinedExamples = combined.slice(0, 3)
+        .map((entry) => `- ${entry.name}: ${entry.reason}`)
+        .join("\n");
+      screenReport = combinedExamples
+        ? `No candidates available.\nFiltered examples:\n${combinedExamples}`
+        : `No candidates available (all filtered by launchpad / holder-quality rules).`;
+      return screenReport;
+    }
 
-      // Hive mind consensus (if enabled)
-      try {
-        const hiveMind = await import("./hive-mind.js");
-        if (hiveMind.isEnabled()) {
-          const poolAddrs = candidates.map(c => c.pool).filter(Boolean);
-          if (poolAddrs.length > 0) {
-            const hive = await hiveMind.formatPoolConsensusForPrompt(poolAddrs);
-            if (hive) candidateContext += "\n" + hive + "\n";
-          }
-        }
-      } catch { /* hive is best-effort */ }
+    // Pre-fetch active_bin for all passing candidates in parallel
+    const activeBinResults = await Promise.allSettled(
+      passing.map(({ pool }) => getActiveBin({ pool_address: pool.pool }))
+    );
 
       const { content, deploySucceeded } = await agentLoop(`
 SCREENING CYCLE
@@ -467,18 +609,18 @@ STEPS:
         if (screenReport) sendMessage(`🔍 Screening Cycle\n\n${screenReport}`).catch(() => {});
       }
     }
-    return screenReport;
   }
+  return screenReport;
+}
 
 export function startCronJobs() {
-  stopCronJobs();
+  stopCronJobs(); // stop any running tasks before (re)starting
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
     if (_managementBusy || isAgentLoopRunning()) return;
     _managementBusy = true;
     timers.managementLastRun = Date.now();
-    try { await runManagementCycle(); }
-    finally { _managementBusy = false; }
+    await runManagementCycle();
   });
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
@@ -521,6 +663,43 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
+  // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
+  let _pnlPollBusy = false;
+  const pnlPollInterval = setInterval(async () => {
+    if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
+    _pnlPollBusy = true;
+    try {
+      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      if (!result?.positions?.length) return;
+      for (const p of result.positions) {
+        if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
+          schedulePeakConfirmation(p.position);
+        }
+        const exit = updatePnlAndCheckExits(p.position, p, config.management);
+        if (exit) {
+          if (exit.action === "TRAILING_TP" && exit.needs_confirmation) {
+            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+              scheduleTrailingDropConfirmation(p.position);
+            }
+            continue;
+          }
+          const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+          const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+          if (sinceLastTrigger >= cooldownMs) {
+            _pollTriggeredAt = Date.now();
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management`);
+            runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+          } else {
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
+          }
+          break;
+        }
+      }
+    } finally {
+      _pnlPollBusy = false;
+    }
+  }, 30_000);
+
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, health cron "${healthCron}" (${healthMin}m)`);
 }
@@ -536,7 +715,7 @@ async function shutdown(signal) {
   process.exit(0);
 }
 
-process.on("SIGINT",  () => shutdown("SIGINT"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ═══════════════════════════════════════════
@@ -546,11 +725,11 @@ function formatCandidates(candidates) {
   if (!candidates.length) return "  No eligible pools found right now.";
 
   const lines = candidates.map((p, i) => {
-    const name   = (p.name || "unknown").padEnd(20);
-    const ftvl   = `${p.fee_active_tvl_ratio ?? p.fee_tvl_ratio}%`.padStart(8);
-    const vol    = `$${((p.volume_24h || 0) / 1000).toFixed(1)}k`.padStart(8);
+    const name = (p.name || "unknown").padEnd(20);
+    const ftvl = `${p.fee_active_tvl_ratio ?? p.fee_tvl_ratio}%`.padStart(8);
+    const vol = `$${((p.volume_window || 0) / 1000).toFixed(1)}k`.padStart(8);
     const active = `${p.active_pct}%`.padStart(6);
-    const org    = String(p.organic_score).padStart(4);
+    const org = String(p.organic_score).padStart(4);
     return `  [${i + 1}]  ${name}  fee/aTVL:${ftvl}  vol:${vol}  in-range:${active}  organic:${org}`;
   });
 
@@ -567,8 +746,10 @@ function formatCandidates(candidates) {
 const isTTY = process.stdin.isTTY;
 let cronStarted = false;
 let busy = false;
+const _telegramQueue = []; // queued messages received while agent was busy
 const sessionHistory = []; // persists conversation across REPL turns
 const MAX_HISTORY = 20;    // keep last 20 messages (10 exchanges)
+let _ttyInterface = null;
 
 function appendHistory(userMsg, assistantMsg) {
   sessionHistory.push({ role: "user", content: userMsg });
@@ -689,7 +870,7 @@ if (isTTY) {
       cronStarted = true;
       // Seed timers so countdown starts from now
       timers.managementLastRun = Date.now();
-      timers.screeningLastRun  = Date.now();
+      timers.screeningLastRun = Date.now();
       startCronJobs();
       console.log("Autonomous cycles are now running.\n");
       rl.setPrompt(buildPrompt());
@@ -720,7 +901,7 @@ if (isTTY) {
   try {
     const [wallet, positions, { candidates, total_eligible, total_screened }] = await Promise.all([
       getWalletBalances(),
-      getMyPositions(),
+      getMyPositions({ force: true }),
       getTopCandidates({ limit: 5 }),
     ]);
 
@@ -749,7 +930,7 @@ if (isTTY) {
 
   // Always start autonomous cycles on launch
   launchCron();
-  maybeRunMissedBriefing().catch(() => {});
+  maybeRunMissedBriefing().catch(() => { });
 
   // Telegram bot (shared handler with non-TTY / Docker)
   if (telegramEnabled()) {
@@ -823,12 +1004,12 @@ Commands:
 
     if (input === "/status") {
       await runBusy(async () => {
-        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
+        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
         console.log(`\nWallet: ${wallet.sol} SOL  ($${wallet.sol_usd})`);
         console.log(`Positions: ${positions.total_positions}`);
         for (const p of positions.positions) {
           const status = p.in_range ? "in-range ✓" : "OUT OF RANGE ⚠";
-          console.log(`  ${p.pair.padEnd(16)} ${status}  fees: $${p.unclaimed_fees_usd}`);
+          console.log(`  ${p.pair.padEnd(16)} ${status}  fees: ${config.management.solMode ? "◎" : "$"}${p.unclaimed_fees_usd}`);
         }
         console.log();
       });
@@ -865,7 +1046,8 @@ Commands:
       console.log(`  maxTvl:               ${s.maxTvl}`);
       console.log(`  minVolume:            ${s.minVolume}`);
       console.log(`  minTokenFeesSol:      ${s.minTokenFeesSol}`);
-      console.log(`  maxBundlersPct:       ${s.maxBundlersPct}`);
+      console.log(`  maxBundlePct:         ${s.maxBundlePct}`);
+      console.log(`  maxBotHoldersPct:     ${s.maxBotHoldersPct}`);
       console.log(`  maxTop10Pct:          ${s.maxTop10Pct}`);
       console.log(`  timeframe:            ${s.timeframe}`);
       const perf = getPerformanceSummary();
@@ -957,7 +1139,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     // ── Free-form chat ───────────────────────
     await runBusy(async () => {
       log("user", input);
-      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel);
+      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel, null, { requireTool: true });
       appendHistory(input, content);
       console.log(`\n${content}\n`);
     });

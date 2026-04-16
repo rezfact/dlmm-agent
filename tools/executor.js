@@ -8,8 +8,6 @@ import {
   claimFees,
   closePosition,
   searchPools,
-  withdrawLiquidity,
-  addLiquidity,
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
@@ -19,6 +17,7 @@ import { setPositionInstruction } from "../state.js";
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
+import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds } from "../config.js";
@@ -95,11 +94,12 @@ const toolMap = {
   remove_strategy:     removeStrategy,
   get_pool_memory: getPoolMemory,
   add_pool_note: addPoolNote,
-  withdraw_liquidity: withdrawLiquidity,
-  add_liquidity: addLiquidity,
   add_to_blacklist: addToBlacklist,
   remove_from_blacklist: removeFromBlacklist,
   list_blacklist: listBlacklist,
+  block_deployer: blockDev,
+  unblock_deployer: unblockDev,
+  list_blocked_deployers: listBlockedDevs,
   add_lesson: ({ rule, tags, pinned, role }) => {
     addLesson(rule, tags || [], { pinned: !!pinned, role: role || null });
     return { saved: true, rule, pinned: !!pinned, role: role || "all" };
@@ -144,18 +144,28 @@ const toolMap = {
       timeframe: ["screening", "timeframe"],
       category: ["screening", "category"],
       minTokenFeesSol: ["screening", "minTokenFeesSol"],
-      maxBundlersPct: ["screening", "maxBundlersPct"],
+      maxBundlePct:     ["screening", "maxBundlePct"],
+      maxBotHoldersPct: ["screening", "maxBotHoldersPct"],
       maxTop10Pct: ["screening", "maxTop10Pct"],
+      minTokenAgeHours: ["screening", "minTokenAgeHours"],
+      maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
+      athFilterPct:     ["screening", "athFilterPct"],
       minFeePerTvl24h: ["management", "minFeePerTvl24h"],
       // management
       minClaimAmount: ["management", "minClaimAmount"],
       autoSwapAfterClaim: ["management", "autoSwapAfterClaim"],
       outOfRangeBinsToClose: ["management", "outOfRangeBinsToClose"],
       outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
+      oorCooldownTriggerCount: ["management", "oorCooldownTriggerCount"],
+      oorCooldownHours: ["management", "oorCooldownHours"],
       minVolumeToRebalance: ["management", "minVolumeToRebalance"],
       emergencyPriceDropPct: ["management", "emergencyPriceDropPct"],
       stopLossPct: ["management", "emergencyPriceDropPct"],
       takeProfitFeePct: ["management", "takeProfitFeePct"],
+      trailingTakeProfit: ["management", "trailingTakeProfit"],
+      trailingTriggerPct: ["management", "trailingTriggerPct"],
+      trailingDropPct: ["management", "trailingDropPct"],
+      solMode: ["management", "solMode"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],
       gasReserve: ["management", "gasReserve"],
@@ -172,7 +182,6 @@ const toolMap = {
       generalModel: ["llm", "generalModel"],
       terseCaveman: ["llm", "terseCaveman"],
       // strategy
-      minBinStep: ["strategy", "minBinStep"],
       binsBelow: ["strategy", "binsBelow"],
     };
 
@@ -241,8 +250,10 @@ const WRITE_TOOLS = new Set([
   "claim_fees",
   "close_position",
   "swap_token",
-  "withdraw_liquidity",
-  "add_liquidity",
+]);
+const PROTECTED_TOOLS = new Set([
+  ...WRITE_TOOLS,
+  "self_update",
 ]);
 
 /**
@@ -250,6 +261,9 @@ const WRITE_TOOLS = new Set([
  */
 export async function executeTool(name, args) {
   const startTime = Date.now();
+
+  // Strip model artifacts like "<|channel|>commentary" appended to tool names
+  name = name.replace(/<.*$/, "").trim();
 
   // ─── Validate tool exists ─────────────────
   const fn = toolMap[name];
@@ -260,7 +274,7 @@ export async function executeTool(name, args) {
   }
 
   // ─── Pre-execution safety checks ──────────
-  if (WRITE_TOOLS.has(name)) {
+  if (PROTECTED_TOOLS.has(name)) {
     const safetyCheck = await runSafetyChecks(name, args);
     if (!safetyCheck.pass) {
       log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
@@ -301,6 +315,11 @@ export async function executeTool(name, args) {
         }
       } else if (name === "close_position") {
         notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        // Note low-yield closes in pool memory so screener avoids redeploying
+        if (args.reason && args.reason.toLowerCase().includes("yield")) {
+          const poolAddr = result.pool || args.pool_address;
+          if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
+        }
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
           try {
@@ -308,7 +327,11 @@ export async function executeTool(name, args) {
             const token = balances.tokens?.find(t => t.mint === result.base_mint);
             if (token && token.usd >= 0.10) {
               log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+              // Tell the model the swap already happened so it doesn't call swap_token again
+              result.auto_swapped = true;
+              result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
+              if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
             }
           } catch (e) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);
@@ -375,10 +398,10 @@ async function runSafetyChecks(name, args) {
       const alreadyInPool = positions.positions.some(
         (p) => p.pool === args.pool_address
       );
-      if (alreadyInPool && !args.allow_duplicate_pool) {
+      if (alreadyInPool) {
         return {
           pass: false,
-          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate. Pass allow_duplicate_pool: true for multi-layer strategy.`,
+          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate.`,
         };
       }
 
@@ -396,42 +419,12 @@ async function runSafetyChecks(name, args) {
       }
 
       // Check amount limits
-      const amountX = args.amount_x ?? 0;
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
-
-      // tokenX-only deploy: skip SOL amount checks
-      if (amountX > 0 && amountY === 0) {
-        // No SOL needed — tokenX-only deploy
-      } else if (amountX > 0 && amountY > 0) {
-        // Custom ratio dual-sided: skip minimum SOL check, only enforce max
-        if (amountY > config.risk.maxDeployAmount) {
-          return {
-            pass: false,
-            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
-          };
-        }
-      } else {
-        // Standard SOL-sided deploy
-        if (amountY <= 0) {
-          return {
-            pass: false,
-            reason: `Must provide a positive SOL amount (amount_y).`,
-          };
-        }
-
-        const minDeploy = Math.max(0.1, config.management.deployAmountSol);
-        if (amountY < minDeploy) {
-          return {
-            pass: false,
-            reason: `Amount ${amountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
-          };
-        }
-        if (amountY > config.risk.maxDeployAmount) {
-          return {
-            pass: false,
-            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
-          };
-        }
+      if (amountY <= 0) {
+        return {
+          pass: false,
+          reason: `Must provide a positive SOL amount (amount_y).`,
+        };
       }
 
       // Check SOL balance (skip for tokenX-only deploys; skip entirely in DRY_RUN so you can test without funding)
@@ -453,6 +446,22 @@ async function runSafetyChecks(name, args) {
     case "swap_token": {
       // Basic check — prevent swapping when DRY_RUN is true
       // (handled inside swapToken itself, but belt-and-suspenders)
+      return { pass: true };
+    }
+
+    case "self_update": {
+      if (process.env.ALLOW_SELF_UPDATE !== "true") {
+        return {
+          pass: false,
+          reason: "self_update is disabled by default. Set ALLOW_SELF_UPDATE=true locally if you really want to enable it.",
+        };
+      }
+      if (!process.stdin.isTTY) {
+        return {
+          pass: false,
+          reason: "self_update is only allowed from a local interactive TTY session, not from Telegram or background automation.",
+        };
+      }
       return { pass: true };
     }
 

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { jsonrepair } from "jsonrepair";
 import { buildSystemPrompt } from "./prompt.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
@@ -233,6 +234,42 @@ function coerceModelForProvider(requestedModel, routing) {
   return m;
 }
 
+const TOOL_REQUIRED_INTENTS = /\b(deploy|open position|open|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|self.?update|pull latest|git pull|update yourself|config|setting|threshold|set |change|update |balance|wallet|position|portfolio|pnl|yield|range|screen|candidate|find pool|search|research|token|smart wallet|whale|watch.?list|tracked wallet|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|lesson|learned|teach|pin|unpin)\b/i;
+
+function shouldRequireRealToolUse(goal, agentType, requireTool) {
+  if (requireTool) return true;
+  if (agentType === "MANAGER") return false;
+  return TOOL_REQUIRED_INTENTS.test(goal);
+}
+
+function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system") {
+  if (providerMode === "user_embedded") {
+    return [
+      ...sessionHistory,
+      {
+        role: "user",
+        content: `[SYSTEM INSTRUCTIONS]\n${systemPrompt}\n\n[USER REQUEST]\n${goal}`,
+      },
+    ];
+  }
+
+  return [
+    { role: "system", content: systemPrompt },
+    ...sessionHistory,
+    { role: "user", content: goal },
+  ];
+}
+
+function isSystemRoleError(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /invalid message role:\s*system/i.test(message);
+}
+
+function isToolChoiceRequiredError(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /tool_choice/i.test(message) && /required/i.test(message);
+}
+
 /**
  * Core ReAct agent loop.
  *
@@ -264,11 +301,18 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
   const perfSummary = getPerformanceSummary();
   const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...sessionHistory,          // inject prior conversation turns
-    { role: "user", content: goal },
-  ];
+  let providerMode = "system";
+  let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+
+  // Track write tools fired this session — prevent the model from calling the same
+  // destructive tool twice (e.g. deploy twice, swap twice after auto-swap)
+  const ONCE_PER_SESSION = new Set(["deploy_position", "swap_token", "close_position"]);
+  // These lock after first attempt regardless of success — retrying them is always wrong
+  const NO_RETRY_TOOLS = new Set(["deploy_position"]);
+  const firedOnce = new Set();
+  const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, requireTool);
+  let sawToolCall = false;
+  let noToolRetryCount = 0;
 
   /** True only after deploy_position returns a real or DRY_RUN simulated deploy (for screening report guards). */
   let deploySucceededThisRun = false;
@@ -363,6 +407,25 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
       }
       const msg = response.choices[0].message;
+      // Repair malformed tool call JSON before pushing to history —
+      // the API rejects the next request if history contains invalid JSON args
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.function?.arguments) {
+            try {
+              JSON.parse(tc.function.arguments);
+            } catch {
+              try {
+                tc.function.arguments = JSON.stringify(JSON.parse(jsonrepair(tc.function.arguments)));
+                log("warn", `Repaired malformed JSON args for ${tc.function.name}`);
+              } catch {
+                tc.function.arguments = "{}";
+                log("error", `Could not repair JSON args for ${tc.function.name} — cleared to {}`);
+              }
+            }
+          }
+        }
+      }
       messages.push(msg);
 
       // If the model didn't call any tools, it's done
@@ -399,21 +462,57 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
           deploySucceeded: deploySucceededThisRun,
         };
       }
+      sawToolCall = true;
 
       emptyStreak = 0;
       // Execute each tool call in parallel
       const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
-        const functionName = toolCall.function.name;
+        const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
         let functionArgs;
 
         try {
           functionArgs = JSON.parse(toolCall.function.arguments);
-        } catch (parseError) {
-          log("error", `Failed to parse args for ${functionName}: ${parseError.message}`);
-          functionArgs = {};
+        } catch {
+          try {
+            functionArgs = JSON.parse(jsonrepair(toolCall.function.arguments));
+            log("warn", `Repaired malformed JSON args for ${functionName}`);
+          } catch (parseError) {
+            log("error", `Failed to parse args for ${functionName}: ${parseError.message}`);
+            functionArgs = {};
+          }
         }
 
+        // Block once-per-session tools from firing a second time
+        if (ONCE_PER_SESSION.has(functionName) && firedOnce.has(functionName)) {
+          log("agent", `Blocked duplicate ${functionName} call — already executed this session`);
+          await onToolFinish?.({
+            name: functionName,
+            args: functionArgs,
+            result: { blocked: true, reason: `${functionName} already attempted this session — do not retry. If it failed, report the error and stop.` },
+            success: false,
+            step,
+          });
+          return {
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ blocked: true, reason: `${functionName} already attempted this session — do not retry. If it failed, report the error and stop.` }),
+          };
+        }
+
+        await onToolStart?.({ name: functionName, args: functionArgs, step });
         const result = await executeTool(functionName, functionArgs);
+        await onToolFinish?.({
+          name: functionName,
+          args: functionArgs,
+          result,
+          success: result?.success !== false && !result?.error && !result?.blocked,
+          step,
+        });
+
+        // Lock deploy_position after first attempt regardless of outcome — retrying is never right
+        // For close/swap: only lock on success so genuine failures can be retried
+        if (NO_RETRY_TOOLS.has(functionName)) firedOnce.add(functionName);
+        else if (ONCE_PER_SESSION.has(functionName) && result.success === true) firedOnce.add(functionName);
 
         if (functionName === "deploy_position" && result && !result.blocked) {
           if (process.env.DRY_RUN === "true" && result.dry_run) {
