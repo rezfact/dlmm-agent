@@ -277,7 +277,15 @@ function isToolChoiceRequiredError(error) {
  * @param {number} maxSteps - Safety limit on iterations (default 20)
  * @returns {{ content: string, userMessage: string, deploySucceeded?: boolean }}
  */
-export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null) {
+export async function agentLoop(
+  goal,
+  maxSteps = config.llm.maxSteps,
+  sessionHistory = [],
+  agentType = "GENERAL",
+  model = null,
+  maxOutputTokens = null,
+  options = null
+) {
   _agentLoopActive = true;
   try {
     return await runAgentLoopInner(
@@ -286,14 +294,18 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       sessionHistory,
       agentType,
       model,
-      maxOutputTokens
+      maxOutputTokens,
+      options
     );
   } finally {
     _agentLoopActive = false;
   }
 }
 
-async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, model, maxOutputTokens) {
+async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, model, maxOutputTokens, options = null) {
+  const onToolStart = options?.onToolStart;
+  const onToolFinish = options?.onToolFinish;
+  const requireTool = options?.requireTool;
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();

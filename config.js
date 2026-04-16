@@ -274,6 +274,8 @@ export const config = {
     maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
     maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
     blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
+    /** If non-empty, only these launchpads pass screening (optional stricter mode). */
+    allowedLaunchpads: u.allowedLaunchpads ?? [],
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
@@ -288,8 +290,10 @@ export const config = {
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
-    /** setup.js writes `stopLossPct`; management prompt uses emergencyPriceDropPct. */
+    /** setup.js writes `stopLossPct`; management prompt may use emergencyPriceDropPct. */
     emergencyPriceDropPct: u.emergencyPriceDropPct ?? u.stopLossPct ?? -50,
+    /** Alias for upstream management rules (same numeric floor as emergencyPriceDropPct). */
+    stopLossPct: u.stopLossPct ?? u.emergencyPriceDropPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close

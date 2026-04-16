@@ -126,13 +126,31 @@ export async function getTopCandidates({ limit = 10 } = {}) {
 
   const maxV = config.screening.maxVolatility;
   const eligible = pools
-    .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
-    .filter(
-      (p) =>
-        maxV == null ||
-        !Number.isFinite(p.volatility) ||
-        p.volatility <= maxV,
-    )
+    .filter((p) => {
+      if (occupiedPools.has(p.pool)) {
+        pushFilteredReason(filteredOut, p, "already have an open position in this pool");
+        return false;
+      }
+      if (occupiedMints.has(p.base?.mint)) {
+        pushFilteredReason(filteredOut, p, "already holding this base token in another pool");
+        return false;
+      }
+      if (isPoolOnCooldown(p.pool)) {
+        log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
+        pushFilteredReason(filteredOut, p, "pool cooldown active");
+        return false;
+      }
+      if (isBaseMintOnCooldown(p.base?.mint)) {
+        log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);
+        pushFilteredReason(filteredOut, p, "token cooldown active");
+        return false;
+      }
+      if (maxV != null && Number.isFinite(p.volatility) && p.volatility > maxV) {
+        pushFilteredReason(filteredOut, p, `volatility ${p.volatility} > maxVolatility ${maxV}`);
+        return false;
+      }
+      return true;
+    })
     .slice(0, limit);
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {

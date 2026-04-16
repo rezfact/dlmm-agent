@@ -418,16 +418,60 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Check amount limits
+      const amountX = args.amount_x ?? 0;
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
-      if (amountY <= 0) {
-        return {
-          pass: false,
-          reason: `Must provide a positive SOL amount (amount_y).`,
-        };
+
+      // tokenX-only deploy: skip SOL amount / min-deploy checks (still need gas — checked below)
+      if (amountX > 0 && amountY === 0) {
+        if (process.env.DRY_RUN !== "true") {
+          const balance = await getWalletBalances();
+          const gasReserve = config.management.gasReserve;
+          if (balance.sol < gasReserve) {
+            return {
+              pass: false,
+              reason: `Insufficient SOL for gas: have ${balance.sol} SOL, need at least ${gasReserve} SOL reserve for token-only deploy.`,
+            };
+          }
+        }
+        return { pass: true };
       }
 
-      // Check SOL balance (skip for tokenX-only deploys; skip entirely in DRY_RUN so you can test without funding)
+      if (amountX > 0 && amountY > 0) {
+        const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+        if (amountY < minDeploy) {
+          return {
+            pass: false,
+            reason: `SOL side ${amountY} is below minimum deploy (${minDeploy} SOL).`,
+          };
+        }
+        if (amountY > config.risk.maxDeployAmount) {
+          return {
+            pass: false,
+            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
+          };
+        }
+      } else {
+        if (amountY <= 0) {
+          return {
+            pass: false,
+            reason: `Must provide a positive SOL amount (amount_y).`,
+          };
+        }
+        const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+        if (amountY < minDeploy) {
+          return {
+            pass: false,
+            reason: `Amount ${amountY} SOL is below the minimum deploy amount (${minDeploy} SOL). Use at least ${minDeploy} SOL.`,
+          };
+        }
+        if (amountY > config.risk.maxDeployAmount) {
+          return {
+            pass: false,
+            reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
+          };
+        }
+      }
+
       if (amountY > 0 && process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;
