@@ -402,6 +402,10 @@ function sanitizeDeployNumericField(args, key) {
   }
   if (typeof raw === "string") {
     const t = raw.trim();
+    if (/^(null|undefined|none|n\/a|na)$/i.test(t)) {
+      delete args[key];
+      return { ok: true };
+    }
     if (/\(/.test(t) || /\bround\b/i.test(t) || /\bMath\b/i.test(t)) {
       return {
         ok: false,

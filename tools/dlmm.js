@@ -264,6 +264,7 @@ export async function deployPosition({
   }
 
   const totalBins = activeBinsBelow + activeBinsAbove;
+  const singleSidedX = finalAmountX > 0 && finalAmountY === 0;
   const isWideRange = totalBins > 69;
   const newPosition = Keypair.generate();
 
@@ -331,7 +332,7 @@ export async function deployPosition({
             user: wallet.publicKey,
             totalXAmount: totalXLamports,
             totalYAmount: totalYLamports,
-            strategy: { minBinId, maxBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
+            strategy: { minBinId, maxBinId, strategyType, ...(singleSidedX ? { singleSidedX: true } : {}) },
             slippage: 10,
           });
           const arr = Array.isArray(txs) ? txs : [txs];
@@ -356,7 +357,7 @@ export async function deployPosition({
             user: wallet.publicKey,
             totalXAmount: totalXLamports,
             totalYAmount: totalYLamports,
-            strategy: { maxBinId, minBinId, strategyType, ...(single_sided_x ? { singleSidedX: true } : {}) },
+            strategy: { maxBinId, minBinId, strategyType, ...(singleSidedX ? { singleSidedX: true } : {}) },
             slippage: 1000, // 10% in bps
           });
         },
