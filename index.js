@@ -131,6 +131,34 @@ function sanitizeUntrustedPromptText(text, maxLen = 500) {
   return cleaned ? JSON.stringify(cleaned) : null;
 }
 
+/**
+ * Conservative PnL % for stop-loss / take-profit / trailing (matches Meteora-style reality when APIs disagree).
+ * - If Meteora marks pnl_pct_suspicious and derived exists → trust derived.
+ * - Else if both reported + derived exist → min (worse for the LP = safer exit).
+ */
+function effectivePnlPctForRules(p) {
+  const r = p.pnl_pct;
+  const d = p.pnl_pct_derived;
+  const rOk = r != null && Number.isFinite(Number(r));
+  const dOk = d != null && Number.isFinite(Number(d));
+  if (p.pnl_pct_suspicious && dOk) return Number(d);
+  if (rOk && dOk) return Math.min(Number(r), Number(d));
+  if (rOk) return Number(r);
+  if (dOk) return Number(d);
+  return null;
+}
+
+/** Position snapshot with pnl_pct / pnl_pct_suspicious overridden for risk exits (state.js + peak/trailing queues). */
+function positionDataForRiskExits(p) {
+  const eff = effectivePnlPctForRules(p);
+  const pnl = eff ?? p.pnl_pct;
+  return {
+    ...p,
+    pnl_pct: pnl,
+    pnl_pct_suspicious: eff != null ? false : !!p.pnl_pct_suspicious,
+  };
+}
+
 function schedulePeakConfirmation(positionAddress) {
   if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
 
@@ -139,7 +167,8 @@ function schedulePeakConfirmation(positionAddress) {
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       const position = result?.positions?.find((p) => p.position === positionAddress);
-      resolvePendingPeak(positionAddress, position?.pnl_pct ?? null, TRAILING_PEAK_CONFIRM_TOLERANCE);
+      const eff = position ? effectivePnlPctForRules(position) : null;
+      resolvePendingPeak(positionAddress, eff ?? position?.pnl_pct ?? null, TRAILING_PEAK_CONFIRM_TOLERANCE);
     } catch (error) {
       log("state_warn", `Peak confirmation failed for ${positionAddress}: ${error.message}`);
     }
@@ -156,9 +185,10 @@ function scheduleTrailingDropConfirmation(positionAddress) {
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       const position = result?.positions?.find((p) => p.position === positionAddress);
+      const eff = position ? effectivePnlPctForRules(position) : null;
       const resolved = resolvePendingTrailingDrop(
         positionAddress,
-        position?.pnl_pct ?? null,
+        eff ?? position?.pnl_pct ?? null,
         config.management.trailingDropPct,
         TRAILING_DROP_CONFIRM_TOLERANCE_PCT,
       );
@@ -253,10 +283,11 @@ export async function runManagementCycle({ silent = false } = {}) {
     // JS trailing TP check
     const exitMap = new Map();
     for (const p of positionData) {
-      if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
+      const pRisk = positionDataForRiskExits(p);
+      if (!pRisk.pnl_pct_suspicious && queuePeakConfirmation(p.position, pRisk.pnl_pct)) {
         schedulePeakConfirmation(p.position);
       }
-      const exit = updatePnlAndCheckExits(p.position, p, config.management);
+      const exit = updatePnlAndCheckExits(p.position, pRisk, config.management);
       if (exit) {
         if (exit.action === "TRAILING_TP" && exit.needs_confirmation) {
           if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
@@ -282,7 +313,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
 
       const tracked = getTrackedPosition(p.position);
-      const pnlSuspect = (() => {
+      const legacyPnlSuspect = (() => {
         if (p.pnl_pct == null) return false;
         if (p.pnl_pct > -90) return false;
         if (tracked?.amount_sol && (p.total_value_usd ?? 0) > 0.01) {
@@ -292,13 +323,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         return false;
       })();
 
+      const effPnl = effectivePnlPctForRules(p);
       const slPct = config.management.stopLossPct ?? config.management.emergencyPriceDropPct ?? -50;
 
-      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= slPct) {
+      if (!legacyPnlSuspect && effPnl != null && effPnl <= slPct) {
         actionMap.set(p.position, { action: "CLOSE", rule: 1, reason: "stop loss" });
         continue;
       }
-      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct >= config.management.takeProfitFeePct) {
+      if (!legacyPnlSuspect && effPnl != null && effPnl >= config.management.takeProfitFeePct) {
         actionMap.set(p.position, { action: "CLOSE", rule: 2, reason: "take profit" });
         continue;
       }
@@ -310,7 +342,18 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin &&
           (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR (above range)" });
+        continue;
+      }
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.active_bin < p.lower_bin - config.management.outOfRangeBinsToClose) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "dumped far below range" });
+        continue;
+      }
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.active_bin < p.lower_bin &&
+          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "OOR (below range)" });
         continue;
       }
       const minAgeYield = config.management.minAgeBeforeYieldCheck ?? 60;
@@ -336,7 +379,12 @@ export async function runManagementCycle({ silent = false } = {}) {
       const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
       const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
+      const eff = effectivePnlPctForRules(p);
+      const pnlLabel =
+        eff != null && p.pnl_pct != null && Math.abs(eff - Number(p.pnl_pct)) > 0.05
+          ? `${p.pnl_pct}% (risk ${eff.toFixed(2)}%)`
+          : `${p.pnl_pct ?? "?"}%`;
+      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${pnlLabel} | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
       if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
@@ -363,11 +411,16 @@ export async function runManagementCycle({ silent = false } = {}) {
 
       const actionBlocks = actionPositions.map((p) => {
         const act = actionMap.get(p.position);
+        const effA = effectivePnlPctForRules(p);
+        const pnlField =
+          effA != null && p.pnl_pct != null && Math.abs(effA - Number(p.pnl_pct)) > 0.05
+            ? `${p.pnl_pct}% (risk ${effA.toFixed(2)}%)`
+            : `${p.pnl_pct ?? "?"}%`;
         return [
           `POSITION: ${p.pair} (${p.position})`,
           `  pool: ${p.pool}`,
           `  action: ${act.action}${act.rule && act.rule !== "exit" ? ` — Rule ${act.rule}: ${act.reason}` : ""}${act.rule === "exit" ? ` — ⚡ Trailing TP: ${act.reason}` : ""}`,
-          `  pnl_pct: ${p.pnl_pct}% | unclaimed_fees: ${cur}${p.unclaimed_fees_usd} | value: ${cur}${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
+          `  pnl_pct: ${pnlField} | unclaimed_fees: ${cur}${p.unclaimed_fees_usd} | value: ${cur}${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
           `  bins: lower=${p.lower_bin} upper=${p.upper_bin} active=${p.active_bin} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
           p.instruction ? `  instruction: "${p.instruction}"` : null,
         ].filter(Boolean).join("\n");
@@ -768,10 +821,11 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
-        if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
+        const pRisk = positionDataForRiskExits(p);
+        if (!pRisk.pnl_pct_suspicious && queuePeakConfirmation(p.position, pRisk.pnl_pct)) {
           schedulePeakConfirmation(p.position);
         }
-        const exit = updatePnlAndCheckExits(p.position, p, config.management);
+        const exit = updatePnlAndCheckExits(p.position, pRisk, config.management);
         if (exit) {
           if (exit.action === "TRAILING_TP" && exit.needs_confirmation) {
             if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
