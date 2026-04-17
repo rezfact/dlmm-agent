@@ -20,6 +20,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
+import { PublicKey } from "@solana/web3.js";
 import { config, reloadScreeningThresholds } from "../config.js";
 import { dataPath } from "../data-path.js";
 import fs from "fs";
@@ -372,11 +373,65 @@ export async function executeTool(name, args) {
 }
 
 /**
+ * Small models often paste pair labels ("ABC-SOL") or JS snippets ("round(35+...)") instead of real args.
+ * Catch before PublicKey / SDK throws a vague "non-base58" error.
+ */
+function validateDeployPoolAddress(addr) {
+  if (addr == null || typeof addr !== "string") {
+    return "pool_address must be the Solana pool public key (base58 string) from the PRE-LOADED candidate line `POOL: name (address)` — not a symbol or pair name.";
+  }
+  const s = addr.trim();
+  if (s.length < 32 || s.length > 44) {
+    return `pool_address must be 32–44 base58 characters (got length ${s.length}). Copy the full pool address from the candidate block, not a short placeholder like "${s.slice(0, 20)}...".`;
+  }
+  try {
+    new PublicKey(s);
+    return null;
+  } catch (e) {
+    const msg = e?.message || String(e);
+    return `Invalid pool_address (${msg}). Use the exact base58 pool key from PRE-LOADED CANDIDATES — never "TOKEN-SOL" or invented addresses.`;
+  }
+}
+
+/** Reject unevaluated expressions; coerce "80" → 80. Mutates `args` key when valid. */
+function sanitizeDeployNumericField(args, key) {
+  const raw = args[key];
+  if (raw == null || raw === "") {
+    return { ok: true };
+  }
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (/\(/.test(t) || /\bround\b/i.test(t) || /\bMath\b/i.test(t)) {
+      return {
+        ok: false,
+        reason: `${key} must be a single number from the candidate metrics (e.g. 100), not JavaScript like "${t.slice(0, 60)}${t.length > 60 ? "…" : ""}".`,
+      };
+    }
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    return { ok: false, reason: `${key} must be a finite number; got ${JSON.stringify(raw)}` };
+  }
+  args[key] = n;
+  return { ok: true };
+}
+
+/**
  * Run safety checks before executing write operations.
  */
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
+      const poolErr = validateDeployPoolAddress(args.pool_address);
+      if (poolErr) {
+        return { pass: false, reason: poolErr };
+      }
+
+      for (const k of ["bin_step", "bins_below", "bins_above", "amount_x", "amount_y", "amount_sol"]) {
+        const r = sanitizeDeployNumericField(args, k);
+        if (!r.ok) return { pass: false, reason: r.reason };
+      }
+
       // Reject pools with bin_step out of configured range
       const minStep = config.screening.minBinStep;
       const maxStep = config.screening.maxBinStep;
