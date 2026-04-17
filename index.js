@@ -717,11 +717,16 @@ ${blocked.length ? `- HARD SKIP if launchpad is any of: ${blocked.join(", ")}` :
 
 EFFICIENCY: PRE-LOADED block has metrics, narrative, smart wallets, audit, active_bin. Pick from this list only. Do NOT call get_top_candidates, get_token_holders, get_token_narrative, check_smart_wallets_on_pool unless data is missing. Prefer one deploy_position then your text report.
 
+deploy_position JSON (CRITICAL — small models often get this wrong):
+- pool_address: COPY ONLY the long base58 string inside parentheses on the line "POOL: Name (THIS_ADDRESS)" — 32–44 characters, letters/numbers only, NO hyphens, NO "Name-SOL", NO placeholders.
+- bin_step: the INTEGER from metrics, e.g. "bin_step=80" → 80. NOT a formula. (You may OMIT bin_step — the server fills it from chain.)
+- bins_below: ONE integer only: round(35 + (volatility/5)*55) clamped to [35,90] — compute the number, do NOT paste the formula text into bin_step.
+- volatility: copy the number from the metrics line.
+- amount_y = ${deployAmount} SOL, amount_x = 0 for SOL-only.
+
 STEPS:
 1. Pick the best candidate from the pre-loaded list.
-2. Call deploy_position (active_bin pre-fetched — avoid redundant get_active_bin).
-   bins_below = round(35 + (volatility/5)*55) clamped to [35,90].
-   DEPLOY SIZE: SOL-only LP → amount_y = ${deployAmount} SOL, amount_x = 0.
+2. Call deploy_position once with valid pool_address and numeric fields as above (active_bin is pre-fetched — avoid redundant get_active_bin).
 3. Report format:
    - ONLY if deploy_position succeeded this run, use:
    Deployed: PAIR

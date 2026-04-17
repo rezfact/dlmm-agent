@@ -129,6 +129,16 @@ async function getPool(poolAddress) {
 
 setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
+/**
+ * On-chain bin step (for executor when the model pastes prose/formulas instead of a number).
+ */
+export async function getPoolBinStepFromAddress(pool_address) {
+  pool_address = normalizeMint(pool_address);
+  const pool = await getPool(pool_address);
+  const step = pool.lbPair?.binStep;
+  return step != null ? Number(step) : null;
+}
+
 // ─── Get Active Bin ────────────────────────────────────────────
 export async function getActiveBin({ pool_address }) {
   pool_address = normalizeMint(pool_address);

@@ -2,6 +2,7 @@ import { discoverPools, getPoolDetail, getTopCandidates } from "./screening.js";
 import {
   getActiveBin,
   deployPosition,
+  getPoolBinStepFromAddress,
   getMyPositions,
   getWalletPositions,
   getPositionPnl,
@@ -417,6 +418,67 @@ function sanitizeDeployNumericField(args, key) {
 }
 
 /**
+ * Small models paste the bins_below *formula* into bin_step. Real bin_step is fixed per pool — read from chain.
+ */
+async function coerceDeployBinStep(args) {
+  const raw = args.bin_step;
+  const looksLikeFormula =
+    typeof raw === "string" &&
+    (/\(/.test(raw) || /\bround\b/i.test(raw) || /\bclamp/i.test(raw));
+  const missing = raw == null || raw === "";
+  if (missing || looksLikeFormula) {
+    try {
+      const s = await getPoolBinStepFromAddress(args.pool_address);
+      if (s != null && Number.isFinite(s)) {
+        args.bin_step = s;
+        log(
+          "executor",
+          `deploy_position: bin_step=${s} from chain (model had ${missing ? "empty" : "formula"}: ${String(raw).slice(0, 80)})`
+        );
+        return { ok: true };
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        reason: `bin_step unreadable from chain: ${e.message}`,
+      };
+    }
+    return {
+      ok: false,
+      reason:
+        "bin_step missing — could not read from chain. Ensure pool_address is correct.",
+    };
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    return { ok: false, reason: `bin_step must be a number; got ${JSON.stringify(raw)}` };
+  }
+  args.bin_step = n;
+  return { ok: true };
+}
+
+/** Models sometimes put the volatility→bins formula in bins_below; compute if volatility is present. */
+function coerceBinsBelowFromVolatility(args) {
+  const raw = args.bins_below;
+  if (raw == null || raw === "") return;
+  const str = String(raw);
+  if (!/\(/.test(str) && !/\bround\b/i.test(str) && !/\bclamp/i.test(str)) return;
+  const v = args.volatility;
+  if (v == null || !Number.isFinite(Number(v))) {
+    delete args.bins_below;
+    log(
+      "executor",
+      "deploy_position: cleared formula-like bins_below (no volatility) — using strategy default bins_below"
+    );
+    return;
+  }
+  const vNum = Number(v);
+  const n = Math.round(35 + (vNum / 5) * 55);
+  args.bins_below = Math.max(35, Math.min(90, n));
+  log("executor", `deploy_position: bins_below=${args.bins_below} from volatility=${vNum} (replaced formula text)`);
+}
+
+/**
  * Run safety checks before executing write operations.
  */
 async function runSafetyChecks(name, args) {
@@ -427,7 +489,12 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: poolErr };
       }
 
-      for (const k of ["bin_step", "bins_below", "bins_above", "amount_x", "amount_y", "amount_sol"]) {
+      const stepRes = await coerceDeployBinStep(args);
+      if (!stepRes.ok) return { pass: false, reason: stepRes.reason };
+
+      coerceBinsBelowFromVolatility(args);
+
+      for (const k of ["bins_below", "bins_above", "amount_x", "amount_y", "amount_sol"]) {
         const r = sanitizeDeployNumericField(args, k);
         if (!r.ok) return { pass: false, reason: r.reason };
       }

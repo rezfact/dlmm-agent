@@ -145,7 +145,8 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
         properties: {
           pool_address: {
             type: "string",
-            description: "The DLMM pool address to LP in"
+            description:
+              "Solana pool public key (32–44 base58 chars) from candidate line POOL: name (address). Never a pair ticker like TOKEN-SOL.",
           },
           amount_y: {
             type: "number",
@@ -174,7 +175,11 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           pool_name: { type: "string", description: "Human-readable pool name for record-keeping" },
           base_mint: { type: "string", description: "Base token mint address — used to prevent duplicate token exposure across pools" },
-          bin_step: { type: "number", description: "Pool bin step (from discover_pools)" },
+          bin_step: {
+            type: "number",
+            description:
+              "Integer from candidate metrics e.g. bin_step=80 — NOT a math expression. Optional: omit to use on-chain value.",
+          },
           base_fee: { type: "number", description: "Pool base fee percentage (from discover_pools)" },
           volatility: { type: "number", description: "Pool volatility at deploy time" },
           fee_tvl_ratio: { type: "number", description: "fee/TVL ratio at deploy time" },
