@@ -44,6 +44,9 @@ startHiveMindBackgroundSync();
 
 const TP_PCT = config.management.takeProfitPct;
 const DEPLOY = config.management.deployAmountSol;
+/** When true, management cron does not trigger extra screening when below max positions (see MERIDIAN_LLM_SAVER). */
+const LLM_SAVER =
+  process.env.MERIDIAN_LLM_SAVER === "true" || process.env.MERIDIAN_LLM_SAVER === "1";
 
 // ═══════════════════════════════════════════
 //  CYCLE TIMERS
