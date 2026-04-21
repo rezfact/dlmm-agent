@@ -5,6 +5,10 @@ import { dataPath } from "./data-path.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = dataPath("user-config.json");
+const DEFAULT_HIVEMIND_URL = "https://api.agentmeridian.xyz";
+const DEFAULT_AGENT_MERIDIAN_API_URL = "https://api.agentmeridian.xyz/api";
+const DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY = "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
+const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
 
 const u = fs.existsSync(USER_CONFIG_PATH)
   ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
@@ -24,6 +28,8 @@ if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
 if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
+if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
+if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 // Optional OpenRouter-style overrides from user-config (colleague-style presets). Prefer .env for secrets.
 if (u.llmBaseUrl && String(u.llmBaseUrl).trim()) {
   process.env.LLM_BASE_URL ||= String(u.llmBaseUrl).trim();
@@ -39,6 +45,17 @@ if (
       "Prefer OPENROUTER_API_KEY or LLM_API_KEY in .env — avoid committing keys."
   );
   process.env.OPENROUTER_API_KEY ||= _llmKeyFromFile;
+}
+
+const indicatorUserConfig = u.chartIndicators ?? {};
+
+function nonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 const LLM_HYBRID =
@@ -258,10 +275,12 @@ export const config = {
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? u.minFeeTvlRatio ?? 0.05,
     /** Soft cap on pool volatility (0–5+ typical); used by getTopCandidates + evolveThresholds */
     maxVolatility: u.maxVolatility ?? 10,
+    excludeHighSupplyConcentration: u.excludeHighSupplyConcentration ?? true,
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl            ?? 150_000,
     minVolume:         u.minVolume         ?? 500,
     minOrganic:        u.minOrganic        ?? 60,
+    minQuoteOrganic:   u.minQuoteOrganic   ?? 60,
     minHolders:        u.minHolders        ?? 500,
     minMcap:           u.minMcap           ?? 150_000,
     maxMcap:           u.maxMcap           ?? 10_000_000,
@@ -270,6 +289,10 @@ export const config = {
     timeframe:         u.timeframe         ?? "5m",
     category:          u.category          ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
+    useDiscordSignals: u.useDiscordSignals ?? false,
+    discordSignalMode: u.discordSignalMode ?? "merge", // merge | only
+    avoidPvpSymbols:   u.avoidPvpSymbols   ?? true,
+    blockPvpSymbols:   u.blockPvpSymbols   ?? false,
     maxBundlePct:      u.maxBundlePct      ?? 30,  // max bundle holding % (OKX advanced-info)
     maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
     maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
@@ -291,12 +314,19 @@ export const config = {
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
+    repeatDeployCooldownEnabled: u.repeatDeployCooldownEnabled ?? true,
+    repeatDeployCooldownTriggerCount: u.repeatDeployCooldownTriggerCount ?? 3,
+    repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
+    repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
+    repeatDeployCooldownMinFeeEarnedPct:
+      u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     /** setup.js writes `stopLossPct`; management prompt may use emergencyPriceDropPct. */
     emergencyPriceDropPct: u.emergencyPriceDropPct ?? u.stopLossPct ?? -50,
     /** Alias for upstream management rules (same numeric floor as emergencyPriceDropPct). */
     stopLossPct: u.stopLossPct ?? u.emergencyPriceDropPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
+    takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
@@ -367,11 +397,60 @@ export const config = {
       ?? (USE_OPENROUTER_DEFAULT ? OPENROUTER_DEFAULT_MODEL : LOCAL_DEFAULT_MODEL),
   },
 
+  // ─── Darwinian Signal Weighting ───────
+  darwin: {
+    enabled:        u.darwinEnabled     ?? true,
+    windowDays:     u.darwinWindowDays  ?? 60,
+    recalcEvery:    u.darwinRecalcEvery ?? 5,
+    boostFactor:    u.darwinBoost       ?? 1.05,
+    decayFactor:    u.darwinDecay       ?? 0.95,
+    weightFloor:    u.darwinFloor       ?? 0.3,
+    weightCeiling:  u.darwinCeiling     ?? 2.5,
+    minSamples:     u.darwinMinSamples  ?? 10,
+  },
+
   // ─── Common Token Mints ────────────────
   tokens: {
     SOL:  "So11111111111111111111111111111111111111112",
     USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  },
+
+  hiveMind: {
+    url: nonEmptyString(u.hiveMindUrl, DEFAULT_HIVEMIND_URL),
+    apiKey: nonEmptyString(u.hiveMindApiKey, process.env.HIVEMIND_API_KEY, DEFAULT_HIVEMIND_API_KEY),
+    agentId: u.agentId ?? null,
+    pullMode: u.hiveMindPullMode ?? "auto",
+  },
+
+  api: {
+    url: nonEmptyString(u.agentMeridianApiUrl, process.env.AGENT_MERIDIAN_API_URL, DEFAULT_AGENT_MERIDIAN_API_URL),
+    publicApiKey: nonEmptyString(u.publicApiKey, process.env.PUBLIC_API_KEY, DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY),
+    lpAgentRelayEnabled: u.lpAgentRelayEnabled ?? false,
+  },
+
+  jupiter: {
+    apiKey: process.env.JUPITER_API_KEY ?? "",
+    referralAccount:
+      process.env.JUPITER_REFERRAL_ACCOUNT ??
+      "9MzhDUnq3KxecyPzvhguQMMPbooXQ3VAoCMPDnoijwey",
+    referralFeeBps: Number(
+      process.env.JUPITER_REFERRAL_FEE_BPS ?? 50,
+    ),
+  },
+
+  indicators: {
+    enabled: indicatorUserConfig.enabled ?? false,
+    entryPreset: indicatorUserConfig.entryPreset ?? "supertrend_break",
+    exitPreset: indicatorUserConfig.exitPreset ?? "supertrend_break",
+    rsiLength: indicatorUserConfig.rsiLength ?? 2,
+    intervals: Array.isArray(indicatorUserConfig.intervals)
+      ? indicatorUserConfig.intervals
+      : ["5_MINUTE"],
+    candles: indicatorUserConfig.candles ?? 298,
+    rsiOversold: indicatorUserConfig.rsiOversold ?? 30,
+    rsiOverbought: indicatorUserConfig.rsiOverbought ?? 80,
+    requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
   },
 };
 
@@ -420,7 +499,13 @@ export function reloadScreeningThresholds() {
     if (fresh.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = fresh.minFeeActiveTvlRatio;
     else if (fresh.minFeeTvlRatio != null) s.minFeeActiveTvlRatio = fresh.minFeeTvlRatio;
     if (fresh.maxVolatility != null) s.maxVolatility = fresh.maxVolatility;
+    if (fresh.useDiscordSignals !== undefined) s.useDiscordSignals = fresh.useDiscordSignals;
+    if (fresh.discordSignalMode != null) s.discordSignalMode = fresh.discordSignalMode;
+    if (fresh.excludeHighSupplyConcentration !== undefined) {
+      s.excludeHighSupplyConcentration = fresh.excludeHighSupplyConcentration;
+    }
     if (fresh.minOrganic     != null) s.minOrganic     = fresh.minOrganic;
+    if (fresh.minQuoteOrganic != null) s.minQuoteOrganic = fresh.minQuoteOrganic;
     if (fresh.minHolders     != null) s.minHolders     = fresh.minHolders;
     if (fresh.minMcap        != null) s.minMcap        = fresh.minMcap;
     if (fresh.maxMcap        != null) s.maxMcap        = fresh.maxMcap;
@@ -435,7 +520,11 @@ export function reloadScreeningThresholds() {
     if (fresh.maxTokenAgeHours  !== undefined) s.maxTokenAgeHours = fresh.maxTokenAgeHours;
     if (fresh.athFilterPct      !== undefined) s.athFilterPct     = fresh.athFilterPct;
     if (fresh.maxBundlePct      != null) s.maxBundlePct     = fresh.maxBundlePct;
+    if (fresh.avoidPvpSymbols   !== undefined) s.avoidPvpSymbols = fresh.avoidPvpSymbols;
+    if (fresh.blockPvpSymbols   !== undefined) s.blockPvpSymbols = fresh.blockPvpSymbols;
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
+    if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
+    if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
     if (Array.isArray(fresh.blockedSymbols)) s.blockedSymbols = fresh.blockedSymbols.map(String);
   } catch { /* ignore */ }
 }

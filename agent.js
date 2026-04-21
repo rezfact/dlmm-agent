@@ -3,30 +3,52 @@ import { jsonrepair } from "jsonrepair";
 import { buildSystemPrompt } from "./prompt.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
-import { getWalletBalances } from "./tools/wallet.js";
-import { getMyPositions } from "./tools/dlmm.js";
-import { log } from "./logger.js";
-import {
-  config,
-  LLM_LOCAL_DEFAULT_MODEL,
-  OPENROUTER_DEFAULT_MODEL,
-} from "./config.js";
-import { getStateSummary } from "./state.js";
-import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
-/** Alternate free model when primary OpenRouter model flakes (502/503/529 retries). */
-const OPENROUTER_RETRY_FALLBACK = (
-  process.env.LLM_BUDGET_FALLBACK_MODEL || "arcee-ai/trinity-large-preview:free"
-).trim();
-
-const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "update_config", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "withdraw_liquidity", "add_liquidity", "list_strategies", "get_strategy", "set_active_strategy", "get_pool_detail", "get_token_info", "get_active_bin", "study_top_lpers"]);
+const MANAGER_TOOLS = new Set([
+  "close_position",
+  "claim_fees",
+  "swap_token",
+  "update_config",
+  "get_position_pnl",
+  "get_my_positions",
+  "set_position_note",
+  "add_pool_note",
+  "get_wallet_balance",
+  "withdraw_liquidity",
+  "add_liquidity",
+  "list_strategies",
+  "get_strategy",
+  "set_active_strategy",
+  "get_pool_detail",
+  "get_token_info",
+  "get_active_bin",
+  "study_top_lpers",
+]);
 // update_config omitted for SCREENER — avoids cron thrash + extra LLM/tool turns during screening
-const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "get_wallet_balance", "get_my_positions", "list_strategies", "get_strategy", "set_active_strategy", "swap_token", "add_liquidity", "study_top_lpers", "get_pool_detail"]);
+const SCREENER_TOOLS = new Set([
+  "deploy_position",
+  "get_active_bin",
+  "get_top_candidates",
+  "check_smart_wallets_on_pool",
+  "get_token_holders",
+  "get_token_narrative",
+  "get_token_info",
+  "search_pools",
+  "get_pool_memory",
+  "add_pool_note",
+  "add_to_blacklist",
+  "get_wallet_balance",
+  "get_my_positions",
+  "list_strategies",
+  "get_strategy",
+  "set_active_strategy",
+  "swap_token",
+  "add_liquidity",
+  "study_top_lpers",
+  "get_pool_detail",
+]);
 
-/**
- * Smaller tool schema set for Ollama — full SCREENER list + JSON schemas were ~6k+ tokens alone.
- * Pre-loaded screening already embeds holder/narrative/smart-wallet data in the user message.
- */
+/** Smaller tool schema for local Ollama — preloaded screening already embeds holder/narrative data. */
 const LOCAL_SCREENER_TOOL_NAMES = new Set([
   "deploy_position",
   "get_active_bin",
@@ -40,18 +62,107 @@ const LOCAL_SCREENER_TOOL_NAMES = new Set([
   "swap_token",
   "add_liquidity",
 ]);
+const GENERAL_INTENT_ONLY_TOOLS = new Set([
+  "self_update",
+  "update_config",
+  "add_to_blacklist",
+  "remove_from_blacklist",
+  "block_deployer",
+  "unblock_deployer",
+  "add_pool_note",
+  "set_position_note",
+  "add_smart_wallet",
+  "remove_smart_wallet",
+  "add_lesson",
+  "pin_lesson",
+  "unpin_lesson",
+  "clear_lessons",
+  "add_strategy",
+  "remove_strategy",
+  "set_active_strategy",
+]);
 
-function getToolsForRole(agentType) {
-  let list;
-  if (agentType === "MANAGER") list = tools.filter((t) => MANAGER_TOOLS.has(t.function.name));
-  else if (agentType === "SCREENER") list = tools.filter((t) => SCREENER_TOOLS.has(t.function.name));
-  else list = tools;
+// Intent → tool subsets for GENERAL role
+const INTENT_TOOLS = {
+  decisions:   new Set(["get_recent_decisions"]),
+  deploy:      new Set(["deploy_position", "get_top_candidates", "get_active_bin", "get_pool_memory", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_wallet_balance", "get_my_positions", "add_pool_note"]),
+  close:       new Set(["close_position", "get_my_positions", "get_position_pnl", "get_wallet_balance", "swap_token"]),
+  claim:       new Set(["claim_fees", "get_my_positions", "get_position_pnl", "get_wallet_balance"]),
+  swap:        new Set(["swap_token", "get_wallet_balance"]),
+  config:      new Set(["update_config"]),
+  blocklist:   new Set(["add_to_blacklist", "remove_from_blacklist", "list_blacklist", "block_deployer", "unblock_deployer", "list_blocked_deployers"]),
+  selfupdate:  new Set(["self_update"]),
+  balance:     new Set(["get_wallet_balance", "get_my_positions", "get_wallet_positions"]),
+  positions:   new Set(["get_my_positions", "get_position_pnl", "get_wallet_balance", "set_position_note", "get_wallet_positions"]),
+  strategy:    new Set(["list_strategies", "get_strategy", "add_strategy", "update_strategy", "delete_strategy", "remove_strategy", "set_active_strategy"]),
+  screen:      new Set(["get_top_candidates", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "check_smart_wallets_on_pool", "get_pool_detail", "get_my_positions", "discover_pools"]),
+  memory:      new Set(["get_pool_memory", "add_pool_note", "list_blacklist", "add_to_blacklist", "remove_from_blacklist"]),
+  smartwallet: new Set(["add_smart_wallet", "remove_smart_wallet", "list_smart_wallets", "check_smart_wallets_on_pool"]),
+  study:       new Set(["study_top_lpers", "get_top_lpers", "get_pool_detail", "search_pools", "get_token_info", "discover_pools", "add_smart_wallet", "list_smart_wallets"]),
+  performance: new Set(["get_performance_history", "get_my_positions", "get_position_pnl"]),
+  lessons:     new Set(["add_lesson", "pin_lesson", "unpin_lesson", "list_lessons", "clear_lessons"]),
+};
 
-  if (config.llm.isLocalEndpoint && agentType === "SCREENER") {
-    return list.filter((t) => LOCAL_SCREENER_TOOL_NAMES.has(t.function.name));
+const INTENT_PATTERNS = [
+  { intent: "decisions",   re: /\b(why did you|why'd you|why was (?:this|that|it)|what made you|what was the reason|why no deploy|why didn't you deploy|why did you close|why did you deploy|why did you skip)\b/i },
+  { intent: "deploy",      re: /\b(deploy|open|add liquidity|lp into|invest in)\b/i },
+  { intent: "close",       re: /\b(close|exit|withdraw|remove liquidity|shut down)\b/i },
+  { intent: "claim",       re: /\b(claim|harvest|collect)\b.*\bfee/i },
+  { intent: "swap",        re: /\b(swap|convert|sell|exchange)\b/i },
+  { intent: "selfupdate",  re: /\b(self.?update|git pull|pull latest|update (the )?bot|update (the )?agent|update yourself)\b/i },
+  { intent: "blocklist",   re: /\b(blacklist|block|unblock|blocklist|blocked deployer|rugger|block dev|block deployer)\b/i },
+  { intent: "config",      re: /\b(config|setting|threshold|update|set |change)\b/i },
+  { intent: "balance",     re: /\b(balance|wallet|sol|how much)\b/i },
+  { intent: "positions",   re: /\b(position|portfolio|open|pnl|yield|range)\b/i },
+  { intent: "strategy",    re: /\b(strategy|strategies)\b/i },
+  { intent: "screen",      re: /\b(screen|candidate|find pool|search|research|token)\b/i },
+  { intent: "memory",      re: /\b(memory|pool history|note|remember)\b/i },
+  { intent: "smartwallet", re: /\b(smart wallet|kol|whale|watch.?list|add wallet|remove wallet|list wallet|tracked wallet|check pool|who.?s in|wallets in|add to (smart|watch|kol))\b/i },
+  { intent: "study",       re: /\b(study top|top lpers?|best lpers?|who.?s lping|lp behavior|lpers?)\b/i },
+  { intent: "performance", re: /\b(performance|history|how.?s the bot|how.?s it doing|stats|report)\b/i },
+  { intent: "lessons",     re: /\b(lesson|learned|teach|pin|unpin|clear lesson|what did you learn)\b/i },
+];
+
+function getToolsForRole(agentType, goal = "") {
+  if (agentType === "MANAGER") {
+    return tools.filter((t) => MANAGER_TOOLS.has(t.function.name));
   }
-  return list;
+  if (agentType === "SCREENER") {
+    let list = tools.filter((t) => SCREENER_TOOLS.has(t.function.name));
+    if (config.llm.isLocalEndpoint) {
+      list = list.filter((t) => LOCAL_SCREENER_TOOL_NAMES.has(t.function.name));
+    }
+    return list;
+  }
+
+  // GENERAL: match intent from goal, combine matched tool sets
+  const matched = new Set();
+  for (const { intent, re } of INTENT_PATTERNS) {
+    if (re.test(goal)) {
+      for (const t of INTENT_TOOLS[intent]) matched.add(t);
+    }
+  }
+
+  // Fall back to all tools if no intent matched
+  if (matched.size === 0) return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
+  return tools.filter(t => matched.has(t.function.name));
 }
+import { getWalletBalances } from "./tools/wallet.js";
+import { getMyPositions } from "./tools/dlmm.js";
+import { log } from "./logger.js";
+import {
+  config,
+  LLM_LOCAL_DEFAULT_MODEL,
+  OPENROUTER_DEFAULT_MODEL,
+} from "./config.js";
+import { getStateSummary } from "./state.js";
+import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { getDecisionSummary } from "./decision-log.js";
+
+/** Alternate free model when primary OpenRouter model flakes (502/503/529 retries). */
+const OPENROUTER_RETRY_FALLBACK = (
+  process.env.LLM_BUDGET_FALLBACK_MODEL || "arcee-ai/trinity-large-preview:free"
+).trim();
 
 function stringifyToolResultForLlm(result) {
   const raw = typeof result === "string" ? result : JSON.stringify(result);
@@ -234,12 +345,17 @@ function coerceModelForProvider(requestedModel, routing) {
   return m;
 }
 
-const TOOL_REQUIRED_INTENTS = /\b(deploy|open position|open|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|self.?update|pull latest|git pull|update yourself|config|setting|threshold|set |change|update |balance|wallet|position|portfolio|pnl|yield|range|screen|candidate|find pool|search|research|token|smart wallet|whale|watch.?list|tracked wallet|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|lesson|learned|teach|pin|unpin)\b/i;
+const MUTATING_TOOL_INTENTS = /\b(deploy|open position|add liquidity|lp into|invest in|close|exit|withdraw|remove liquidity|claim|harvest|collect|swap|convert|sell|exchange|block|unblock|blacklist|add smart wallet|remove smart wallet|add wallet|remove wallet|pin|unpin|clear lesson|add lesson|set active strategy|remove strategy|add strategy|set |change |update |self.?update|pull latest|git pull|update yourself)\b/i;
+const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|pnl|yield|range|show positions|open positions|screen|candidate|find pool|search|research|analyze|check pool|token holders|narrative|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|list smart wallets|list blacklist|list blocked deployers|list lessons)\b/i;
+const CONFIG_READ_ONLY_INTENTS = /\b(check|show|what(?:'s| is)?|review|inspect|see)\b.*\b(config|settings?|thresholds?)\b/i;
+const DECISION_EXPLANATION_INTENTS = /\b(why did you|why'd you|why was (?:this|that|it)|what made you|what was the reason|why no deploy|why didn't you deploy|why did you close|why did you deploy|why did you skip)\b/i;
 
-function shouldRequireRealToolUse(goal, agentType, requireTool) {
-  if (requireTool) return true;
+function shouldRequireRealToolUse(goal, agentType, interactive = false) {
   if (agentType === "MANAGER") return false;
-  return TOOL_REQUIRED_INTENTS.test(goal);
+  if (DECISION_EXPLANATION_INTENTS.test(goal)) return false;
+  if (CONFIG_READ_ONLY_INTENTS.test(goal)) return false;
+  if (MUTATING_TOOL_INTENTS.test(goal)) return true;
+  return interactive && LIVE_DATA_TOOL_INTENTS.test(goal);
 }
 
 function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system") {
@@ -277,41 +393,23 @@ function isToolChoiceRequiredError(error) {
  * @param {number} maxSteps - Safety limit on iterations (default 20)
  * @returns {{ content: string, userMessage: string, deploySucceeded?: boolean }}
  */
-export async function agentLoop(
-  goal,
-  maxSteps = config.llm.maxSteps,
-  sessionHistory = [],
-  agentType = "GENERAL",
-  model = null,
-  maxOutputTokens = null,
-  options = null
-) {
-  _agentLoopActive = true;
-  try {
-    return await runAgentLoopInner(
-      goal,
-      maxSteps,
-      sessionHistory,
-      agentType,
-      model,
-      maxOutputTokens,
-      options
-    );
-  } finally {
-    _agentLoopActive = false;
-  }
-}
-
-async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, model, maxOutputTokens, options = null) {
-  const onToolStart = options?.onToolStart;
-  const onToolFinish = options?.onToolFinish;
-  const requireTool = options?.requireTool;
+export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
+  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const decisionSummary = getDecisionSummary();
+  let weightsSummary = null;
+  if (agentType === "SCREENER") {
+    try {
+      const { getWeightsSummary } = await import("./signal-weights.js");
+      const { config } = await import("./config.js");
+      if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
+    } catch { /* signal-weights not critical */ }
+  }
+  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
 
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
@@ -322,7 +420,7 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
   // These lock after first attempt regardless of success — retrying them is always wrong
   const NO_RETRY_TOOLS = new Set(["deploy_position"]);
   const firedOnce = new Set();
-  const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, requireTool);
+  const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
   let sawToolCall = false;
   let noToolRetryCount = 0;
 
@@ -365,7 +463,7 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
           response = await clientThisStep.chat.completions.create({
             model: usedModel,
             messages,
-            tools: getToolsForRole(agentType),
+            tools: getToolsForRole(agentType, goal),
             tool_choice: "auto",
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
@@ -419,8 +517,8 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
       }
       const msg = response.choices[0].message;
-      // Repair malformed tool call JSON before pushing to history —
-      // the API rejects the next request if history contains invalid JSON args
+      const invalidToolArgErrors = new Map();
+      // Keep tool-call history API-valid, but never execute unrecoverable args.
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
           if (tc.function?.arguments) {
@@ -432,7 +530,9 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
                 log("warn", `Repaired malformed JSON args for ${tc.function.name}`);
               } catch {
                 tc.function.arguments = "{}";
-                log("error", `Could not repair JSON args for ${tc.function.name} — cleared to {}`);
+                const error = `Invalid tool arguments for ${tc.function.name}`;
+                invalidToolArgErrors.set(tc.id, error);
+                log("error", `${error}: could not repair JSON`);
               }
             }
           }
@@ -482,6 +582,20 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
         const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
         let functionArgs;
 
+        if (invalidToolArgErrors.has(toolCall.id)) {
+          const result = {
+            success: false,
+            error: invalidToolArgErrors.get(toolCall.id),
+            blocked: true,
+          };
+          await onToolFinish?.({ name: functionName, args: {}, result, success: false, step });
+          return {
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result),
+          };
+        }
+
         try {
           functionArgs = JSON.parse(toolCall.function.arguments);
         } catch {
@@ -490,7 +604,17 @@ async function runAgentLoopInner(goal, maxSteps, sessionHistory, agentType, mode
             log("warn", `Repaired malformed JSON args for ${functionName}`);
           } catch (parseError) {
             log("error", `Failed to parse args for ${functionName}: ${parseError.message}`);
-            functionArgs = {};
+            const result = {
+              success: false,
+              error: `Invalid tool arguments for ${functionName}`,
+              blocked: true,
+            };
+            await onToolFinish?.({ name: functionName, args: {}, result, success: false, step });
+            return {
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify(result),
+            };
           }
         }
 

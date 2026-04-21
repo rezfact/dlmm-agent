@@ -23,8 +23,9 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { PublicKey } from "@solana/web3.js";
 import { config, reloadScreeningThresholds } from "../config.js";
-import { poolMatchesBlockedSymbols } from "../screening-blocklist.js";
 import { dataPath } from "../data-path.js";
+import { poolMatchesBlockedSymbols } from "../screening-blocklist.js";
+import { getRecentDecisions } from "../decision-log.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -38,6 +39,67 @@ const USER_CONFIG_PATH = dataPath("user-config.json");
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
 export function registerCronRestarter(fn) { _cronRestarter = fn; }
+
+function coerceBoolean(value, key) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  throw new Error(`${key} must be true or false`);
+}
+
+function coerceFiniteNumber(value, key) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error(`${key} must be a finite number`);
+  return n;
+}
+
+function coerceString(value, key) {
+  if (typeof value !== "string") throw new Error(`${key} must be a string`);
+  return value.trim();
+}
+
+function coerceStringArray(value, key) {
+  if (!Array.isArray(value)) throw new Error(`${key} must be an array of strings`);
+  return value.map((entry) => coerceString(entry, key)).filter(Boolean);
+}
+
+function normalizeConfigValue(key, value) {
+  const booleanKeys = new Set([
+    "excludeHighSupplyConcentration",
+    "useDiscordSignals",
+    "avoidPvpSymbols",
+    "blockPvpSymbols",
+    "autoSwapAfterClaim",
+    "trailingTakeProfit",
+    "solMode",
+    "darwinEnabled",
+    "lpAgentRelayEnabled",
+  ]);
+  const arrayKeys = new Set(["allowedLaunchpads", "blockedLaunchpads"]);
+  const stringKeys = new Set([
+    "timeframe",
+    "category",
+    "discordSignalMode",
+    "strategy",
+    "managementModel",
+    "screeningModel",
+    "generalModel",
+    "hiveMindUrl",
+    "hiveMindApiKey",
+    "agentId",
+    "hiveMindPullMode",
+    "publicApiKey",
+    "agentMeridianApiUrl",
+  ]);
+  if (value === null) return null;
+  if (booleanKeys.has(key)) return coerceBoolean(value, key);
+  if (arrayKeys.has(key)) return coerceStringArray(value, key);
+  if (stringKeys.has(key)) return coerceString(value, key);
+  return coerceFiniteNumber(value, key);
+}
 
 // Map tool names to implementations
 const toolMap = {
@@ -90,6 +152,7 @@ const toolMap = {
     }
   },
   get_performance_history: getPerformanceHistory,
+  get_recent_decisions: ({ limit } = {}) => ({ decisions: getRecentDecisions(limit || 6) }),
   add_strategy:        addStrategy,
   list_strategies:     listStrategies,
   get_strategy:        getStrategy,
@@ -134,11 +197,12 @@ const toolMap = {
     const CONFIG_MAP = {
       // screening
       minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
-      maxVolatility: ["screening", "maxVolatility"],
+      excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
       minTvl: ["screening", "minTvl"],
       maxTvl: ["screening", "maxTvl"],
       minVolume: ["screening", "minVolume"],
       minOrganic: ["screening", "minOrganic"],
+      minQuoteOrganic: ["screening", "minQuoteOrganic"],
       minHolders: ["screening", "minHolders"],
       minMcap: ["screening", "minMcap"],
       maxMcap: ["screening", "maxMcap"],
@@ -147,9 +211,15 @@ const toolMap = {
       timeframe: ["screening", "timeframe"],
       category: ["screening", "category"],
       minTokenFeesSol: ["screening", "minTokenFeesSol"],
+      useDiscordSignals: ["screening", "useDiscordSignals"],
+      discordSignalMode: ["screening", "discordSignalMode"],
+      avoidPvpSymbols: ["screening", "avoidPvpSymbols"],
+      blockPvpSymbols: ["screening", "blockPvpSymbols"],
       maxBundlePct:     ["screening", "maxBundlePct"],
       maxBotHoldersPct: ["screening", "maxBotHoldersPct"],
       maxTop10Pct: ["screening", "maxTop10Pct"],
+      allowedLaunchpads: ["screening", "allowedLaunchpads"],
+      blockedLaunchpads: ["screening", "blockedLaunchpads"],
       minTokenAgeHours: ["screening", "minTokenAgeHours"],
       maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
       athFilterPct:     ["screening", "athFilterPct"],
@@ -161,31 +231,61 @@ const toolMap = {
       outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
       oorCooldownTriggerCount: ["management", "oorCooldownTriggerCount"],
       oorCooldownHours: ["management", "oorCooldownHours"],
+      repeatDeployCooldownEnabled: ["management", "repeatDeployCooldownEnabled"],
+      repeatDeployCooldownTriggerCount: ["management", "repeatDeployCooldownTriggerCount"],
+      repeatDeployCooldownHours: ["management", "repeatDeployCooldownHours"],
+      repeatDeployCooldownScope: ["management", "repeatDeployCooldownScope"],
+      repeatDeployCooldownMinFeeEarnedPct: ["management", "repeatDeployCooldownMinFeeEarnedPct"],
       minVolumeToRebalance: ["management", "minVolumeToRebalance"],
-      emergencyPriceDropPct: ["management", "emergencyPriceDropPct"],
-      stopLossPct: ["management", "emergencyPriceDropPct"],
-      takeProfitFeePct: ["management", "takeProfitFeePct"],
+      stopLossPct: ["management", "stopLossPct"],
+      takeProfitPct: ["management", "takeProfitPct"],
+      takeProfitFeePct: ["management", "takeProfitPct"],
       trailingTakeProfit: ["management", "trailingTakeProfit"],
       trailingTriggerPct: ["management", "trailingTriggerPct"],
       trailingDropPct: ["management", "trailingDropPct"],
+      pnlSanityMaxDiffPct: ["management", "pnlSanityMaxDiffPct"],
       solMode: ["management", "solMode"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],
       gasReserve: ["management", "gasReserve"],
       positionSizePct: ["management", "positionSizePct"],
+      minAgeBeforeYieldCheck: ["management", "minAgeBeforeYieldCheck"],
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
       // schedule
       managementIntervalMin: ["schedule", "managementIntervalMin"],
       screeningIntervalMin: ["schedule", "screeningIntervalMin"],
+      healthCheckIntervalMin: ["schedule", "healthCheckIntervalMin"],
       // models
       managementModel: ["llm", "managementModel"],
       screeningModel: ["llm", "screeningModel"],
       generalModel: ["llm", "generalModel"],
-      terseCaveman: ["llm", "terseCaveman"],
+      temperature: ["llm", "temperature"],
+      maxTokens: ["llm", "maxTokens"],
+      maxSteps: ["llm", "maxSteps"],
       // strategy
+      strategy: ["strategy", "strategy"],
       binsBelow: ["strategy", "binsBelow"],
+      // hivemind
+      hiveMindUrl: ["hiveMind", "url"],
+      hiveMindApiKey: ["hiveMind", "apiKey"],
+      agentId: ["hiveMind", "agentId"],
+      hiveMindPullMode: ["hiveMind", "pullMode"],
+      // meridian api / relay
+      publicApiKey: ["api", "publicApiKey"],
+      agentMeridianApiUrl: ["api", "url"],
+      lpAgentRelayEnabled: ["api", "lpAgentRelayEnabled"],
+      // chart indicators
+      chartIndicatorsEnabled: ["indicators", "enabled", ["chartIndicators", "enabled"]],
+      indicatorEntryPreset: ["indicators", "entryPreset", ["chartIndicators", "entryPreset"]],
+      indicatorExitPreset: ["indicators", "exitPreset", ["chartIndicators", "exitPreset"]],
+      rsiLength: ["indicators", "rsiLength", ["chartIndicators", "rsiLength"]],
+      indicatorIntervals: ["indicators", "intervals", ["chartIndicators", "intervals"]],
+      indicatorCandles: ["indicators", "candles", ["chartIndicators", "candles"]],
+      rsiOversold: ["indicators", "rsiOversold", ["chartIndicators", "rsiOversold"]],
+      rsiOverbought: ["indicators", "rsiOverbought", ["chartIndicators", "rsiOverbought"]],
+      requireAllIntervals: ["indicators", "requireAllIntervals", ["chartIndicators", "requireAllIntervals"]],
     };
 
     const applied = {};
@@ -196,10 +296,18 @@ const toolMap = {
       Object.entries(CONFIG_MAP).map(([k, v]) => [k.toLowerCase(), [k, v]])
     );
 
+    if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+      return { success: false, error: "changes must be an object", reason };
+    }
+
     for (const [key, val] of Object.entries(changes)) {
       const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
       if (!match) { unknown.push(key); continue; }
-      applied[match[0]] = val;
+      try {
+        applied[match[0]] = normalizeConfigValue(match[0], val);
+      } catch (error) {
+        return { success: false, error: error.message, key: match[0], reason };
+      }
     }
 
     if (Object.keys(applied).length === 0) {
@@ -207,7 +315,16 @@ const toolMap = {
       return { success: false, unknown, reason };
     }
 
-    // Apply to live config immediately
+    let userConfig = {};
+    if (fs.existsSync(USER_CONFIG_PATH)) {
+      try {
+        userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+      } catch (error) {
+        return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
+      }
+    }
+
+    // Apply to live config immediately after the persisted config is known-good.
     for (const [key, val] of Object.entries(applied)) {
       const [section, field] = CONFIG_MAP[key];
       const before = config[section][field];
@@ -215,12 +332,21 @@ const toolMap = {
       log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
     }
 
-    // Persist to user-config.json
-    let userConfig = {};
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      try { userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8")); } catch { /**/ }
+    for (const [key, val] of Object.entries(applied)) {
+      const persistPath = CONFIG_MAP[key]?.[2];
+      if (Array.isArray(persistPath) && persistPath.length > 0) {
+        let target = userConfig;
+        for (const part of persistPath.slice(0, -1)) {
+          if (!target[part] || typeof target[part] !== "object" || Array.isArray(target[part])) {
+            target[part] = {};
+          }
+          target = target[part];
+        }
+        target[persistPath[persistPath.length - 1]] = val;
+      } else {
+        userConfig[key] = val;
+      }
     }
-    Object.assign(userConfig, applied);
     userConfig._lastAgentTune = new Date().toISOString();
     fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
 
@@ -231,9 +357,7 @@ const toolMap = {
       log("config", `Cron restarted — management: ${config.schedule.managementIntervalMin}m, screening: ${config.schedule.screeningIntervalMin}m`);
     }
 
-    // Save as a lesson — but skip ephemeral per-deploy interval changes
-    // (managementIntervalMin / screeningIntervalMin change every deploy based on volatility;
-    //  the rule is already in the system prompt, storing it 75+ times is pure noise)
+    // Skip repeated volatility-driven interval changes; they are operational tuning, not reusable lessons.
     const lessonsKeys = Object.keys(applied).filter(
       k => k !== "managementIntervalMin" && k !== "screeningIntervalMin"
     );
@@ -306,16 +430,7 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        // DRY_RUN returns no position/tx; do not send a fake "Deployed" Telegram.
-        // Also require on-chain proof before notifying (avoids undefined Tx/Position if result is malformed).
-        const txSig = result.txs?.[0] ?? result.tx;
-        if (result.dry_run) {
-          log("deploy", "DRY_RUN — deploy_position simulated only (no chain tx, no Telegram)");
-        } else if (result.position && txSig) {
-          notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: txSig, priceRange: result.price_range, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
-        } else {
-          log("executor_warn", "deploy_position: marked success but missing position or tx signature — skipping deploy Telegram");
-        }
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
       } else if (name === "close_position") {
         notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying

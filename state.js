@@ -191,25 +191,6 @@ export function recordClose(position_address, reason) {
 }
 
 /**
- * Record a rebalance (close + redeploy).
- */
-export function recordRebalance(old_position, new_position) {
-  const state = load();
-  const old = state.positions[old_position];
-  if (old) {
-    old.closed = true;
-    old.closed_at = new Date().toISOString();
-    old.notes.push(`Rebalanced into ${new_position} at ${old.closed_at}`);
-  }
-  const newPos = state.positions[new_position];
-  if (newPos) {
-    newPos.rebalance_count = (old?.rebalance_count || 0) + 1;
-    newPos.notes.push(`Rebalanced from ${old_position}`);
-  }
-  save(state);
-}
-
-/**
  * Set a persistent instruction for a position (e.g. "hold until 5% profit").
  * Overwrites any previous instruction. Pass null to clear.
  */
@@ -223,7 +204,7 @@ export function setPositionInstruction(position_address, instruction) {
   return true;
 }
 
-export function queuePeakConfirmation(position_address, candidatePnlPct) {
+export function queuePeakConfirmation(position_address, candidatePnlPct, options = {}) {
   if (candidatePnlPct == null) return false;
   const state = load();
   const pos = state.positions[position_address];
@@ -231,6 +212,15 @@ export function queuePeakConfirmation(position_address, candidatePnlPct) {
 
   const currentPeak = pos.peak_pnl_pct ?? 0;
   if (candidatePnlPct <= currentPeak) return false;
+
+  if (options.immediate) {
+    pos.peak_pnl_pct = candidatePnlPct;
+    pos.pending_peak_pnl_pct = null;
+    pos.pending_peak_started_at = null;
+    save(state);
+    log("state", `Position ${position_address} peak PnL accepted at ${candidatePnlPct.toFixed(2)}% from relay poll`);
+    return true;
+  }
 
   const changed =
     pos.pending_peak_pnl_pct == null ||
@@ -322,15 +312,6 @@ export function resolvePendingTrailingDrop(position_address, currentPnlPct, trai
   save(state);
   log("state", `Position ${position_address} rejected trailing drop after 15s recheck (pending current: ${pendingCurrent.toFixed(2)}%, current: ${currentPnlPct ?? "?"}%)`);
   return { confirmed: false, rejected: true };
-}
-
-/**
- * Get all tracked positions (optionally filter open-only).
- */
-export function getTrackedPositions(openOnly = false) {
-  const state = load();
-  const all = Object.values(state.positions);
-  return openOnly ? all.filter((p) => !p.closed) : all;
 }
 
 /**
