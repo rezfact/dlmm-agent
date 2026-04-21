@@ -20,6 +20,7 @@ import {
   editMessageWithButtons,
   answerCallbackQuery,
   notifyOutOfRange,
+  notifyStartupPing,
   isEnabled as telegramEnabled,
   createLiveMessage,
 } from "./telegram.js";
