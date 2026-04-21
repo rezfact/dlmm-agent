@@ -9,6 +9,7 @@
 import fs from "fs";
 import { dataPath } from "./data-path.js";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
 
 const USER_CONFIG_PATH = dataPath("user-config.json");
