@@ -108,6 +108,18 @@ function shouldUsePnlRecheck() {
   return !config.api.lpAgentRelayEnabled;
 }
 
+/** PnL % used for rules, peak/trailing rechecks, and management labels when reported vs derived diverge. */
+function effectivePnlPctForRules(position) {
+  if (!position) return null;
+  const raw = Number(position.pnl_pct);
+  const derived =
+    position.pnl_pct_derived != null ? Number(position.pnl_pct_derived) : null;
+  if (position.pnl_pct_suspicious && derived != null && Number.isFinite(derived)) {
+    return derived;
+  }
+  return Number.isFinite(raw) ? raw : null;
+}
+
 function schedulePeakConfirmation(positionAddress) {
   if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
 
