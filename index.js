@@ -1686,7 +1686,7 @@ if (isTTY) {
 
   // Telegram bot (shared handler with non-TTY / Docker)
   if (telegramEnabled()) {
-    startPolling(handleTelegramLine);
+    startPolling(telegramHandler);
     notifyStartupPing().catch(() => {});
   }
 
@@ -1906,7 +1906,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   startCronJobs();
   maybeRunMissedBriefing().catch(() => {});
   if (telegramEnabled()) {
-    startPolling(handleTelegramLine);
+    startPolling(telegramHandler);
     log("startup", "Telegram bot polling started (non-TTY / Docker)");
     notifyStartupPing().catch(() => {});
   }
