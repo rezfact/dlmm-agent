@@ -23,6 +23,7 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { PublicKey } from "@solana/web3.js";
 import { config, reloadScreeningThresholds } from "../config.js";
+import { poolMatchesBlockedSymbols } from "../screening-blocklist.js";
 import { dataPath } from "../data-path.js";
 import fs from "fs";
 import path from "path";
@@ -491,6 +492,38 @@ async function runSafetyChecks(name, args) {
       const poolErr = validateDeployPoolAddress(args.pool_address);
       if (poolErr) {
         return { pass: false, reason: poolErr };
+      }
+
+      if (config.screening.blockedSymbols?.length) {
+        const quickStub = {
+          name: args.pool_name || "",
+          base: {
+            symbol:
+              typeof args.pool_name === "string" && args.pool_name.includes("-")
+                ? args.pool_name.split("-")[0]
+                : undefined,
+          },
+        };
+        if (poolMatchesBlockedSymbols(quickStub)) {
+          return {
+            pass: false,
+            reason: `Pool blocked by user-config blockedSymbols (pair hint: ${args.pool_name || "n/a"}).`,
+          };
+        }
+        try {
+          const raw = await getPoolDetail({
+            pool_address: args.pool_address,
+            timeframe: config.screening.timeframe,
+          });
+          if (poolMatchesBlockedSymbols(raw)) {
+            return {
+              pass: false,
+              reason: `Pool blocked by screening.blockedSymbols (${raw?.name || args.pool_address.slice(0, 8)}…).`,
+            };
+          }
+        } catch (e) {
+          log("executor_warn", `deploy_position: blockedSymbols verify via getPoolDetail failed: ${e.message}`);
+        }
       }
 
       const stepRes = await coerceDeployBinStep(args);

@@ -279,6 +279,8 @@ export const config = {
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
+    /** Base token symbols or pair name stems (before "-SOL") to hard-skip, e.g. ["TOKABU","UNC"] */
+    blockedSymbols:     Array.isArray(u.blockedSymbols) ? u.blockedSymbols.map(String) : [],
   },
 
   // ─── Position Management ────────────────
@@ -434,5 +436,6 @@ export function reloadScreeningThresholds() {
     if (fresh.athFilterPct      !== undefined) s.athFilterPct     = fresh.athFilterPct;
     if (fresh.maxBundlePct      != null) s.maxBundlePct     = fresh.maxBundlePct;
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
+    if (Array.isArray(fresh.blockedSymbols)) s.blockedSymbols = fresh.blockedSymbols.map(String);
   } catch { /* ignore */ }
 }

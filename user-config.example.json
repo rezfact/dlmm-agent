@@ -28,6 +28,7 @@
   "maxBotHoldersPct": 30,
   "maxTop10Pct": 60,
   "blockedLaunchpads": [],
+  "blockedSymbols": ["TOKABU", "UNC"],
   "minTokenAgeHours": null,
   "maxTokenAgeHours": null,
   "athFilterPct": null,

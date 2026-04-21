@@ -3,6 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { poolMatchesBlockedSymbols } from "../screening-blocklist.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -62,6 +63,10 @@ export async function discoverPools({
     }
     if (p.dev && isDevBlocked(p.dev)) {
       log("dev_blocklist", `Filtered blocked deployer ${p.dev?.slice(0, 8)} token ${p.base?.symbol} in pool ${p.name}`);
+      return false;
+    }
+    if (poolMatchesBlockedSymbols(p)) {
+      log("screening", `Filtered blocked symbol list: ${p.name} (${p.base?.symbol || "?"})`);
       return false;
     }
     return true;

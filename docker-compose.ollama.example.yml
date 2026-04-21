@@ -1,8 +1,12 @@
 # Example: run Ollama beside Meridian with bounded RAM (tune for your VPS).
 # Copy/adjust, then: docker compose -f docker-compose.ollama.example.yml up -d
 #
-# ~4 vCPU / 8 GiB / NVMe: prefer `mem_limit` ≈3–3.5G for Ollama so Meridian (~1.5G) + OS + optional
-# IPFS stay stable. In `.env` set MERIDIAN_VPS_PROFILE=small when using Ollama for SCREENER.
+# ~4 vCPU / 8 GiB / NVMe: give Ollama most cores (Meridian compose defaults to 1 CPU cap). Example below
+# uses 3.5 CPUs so ~0.5 vCPU stays for OS + IPFS + Docker. If Meridian is idle, Ollama can still burst.
+# In `.env` set MERIDIAN_VPS_PROFILE=small when using Ollama for SCREENER.
+#
+# After editing limits: `docker compose -f docker-compose.ollama.example.yml up -d` (or your compose file).
+# Live change without recreate: `docker update --cpus=3.5 ollama-local-llm`
 #
 # Point Meridian at this instance, e.g.:
 #   - Ollama on same host as Meridian: LLM_BASE_URL=http://host.docker.internal:11434/v1
@@ -25,10 +29,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "3.0"
+          # 4 vCPU host: 3.5 leaves headroom for Meridian (1 CPU) + OS. Use "7" on 8+ vCPU if RAM allows.
+          cpus: "3.5"
           memory: 3500M
         reservations:
-          cpus: "0.25"
+          cpus: "0.5"
           memory: 1500M
 
 volumes:

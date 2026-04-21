@@ -772,8 +772,8 @@ export function startCronJobs() {
 
   const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
     if (_managementBusy || isAgentLoopRunning()) return;
-    _managementBusy = true;
-    timers.managementLastRun = Date.now();
+    // Do not set _managementBusy here — runManagementCycle owns the flag + finally cleanup.
+    // Pre-setting it caused an immediate return at runManagementCycle's guard and left the flag stuck true.
     await runManagementCycle();
   });
 
