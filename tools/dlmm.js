@@ -474,6 +474,8 @@ export async function deployPosition({
       : 0;
   const finalAmountY = amount_y ?? amount_sol ?? fallbackAmountY;
   const finalAmountX = amount_x ?? 0;
+  /** Token X only (no SOL leg); Meteora SDK strategy flag — must stay in sync with addLiquidity calls below. */
+  const singleSidedX = finalAmountX > 0 && finalAmountY === 0;
   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
   if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
     throw new Error(
