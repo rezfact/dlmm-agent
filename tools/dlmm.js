@@ -447,14 +447,6 @@ export async function deployPosition({
     throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, or bid_ask.`);
   }
 
-  if (minBinId > maxBinId) {
-    return {
-      success: false,
-      error:
-        `Invalid bin range: min bin ${minBinId} > max bin ${maxBinId} (active=${activeBin.binId}, bins_below=${activeBinsBelow}, bins_above=${activeBinsAbove}). ` +
-        `bins_below and bins_above must be non-negative counts from the active bin, not absolute bin ids.`,
-    };
-  }
   if (activeBinsBelow > DEPLOY_MAX_BINS_BELOW || activeBinsAbove > DEPLOY_MAX_BINS_ABOVE) {
     return {
       success: false,
