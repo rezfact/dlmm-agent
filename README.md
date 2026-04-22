@@ -582,6 +582,37 @@ discord-listener/
 
 ---
 
+## Merging upstream (fork maintenance)
+
+This repo periodically merges changes from **[yunus-0x/meridian](https://github.com/yunus-0x/meridian)** (`upstream/main`). Large merges can reorder hot paths (especially `tools/dlmm.js` deploy/close). Use the checklist below after every upstream pull so regressions do not reach production.
+
+### Reference commit (pre–major-merge baseline)
+
+Keep this hash as a **diff anchor** when reconciling tricky conflicts or verifying deploy logic after a merge:
+
+| Item | Value |
+|------|--------|
+| **Commit** | `9e9cb0491de022eb3fa3936201ef467978568944` |
+| **Summary** | Fix management cron deadlock; add `screening.blockedSymbols` filter |
+| **Use** | Compare deploy/executor paths against this tree when upstream touches `tools/dlmm.js`, `tools/executor.js`, or `agent.js`. |
+
+Example:
+
+```bash
+git fetch upstream
+git diff 9e9cb0491de022eb3fa3936201ef467978568944 -- tools/dlmm.js tools/executor.js agent.js index.js
+```
+
+### Post-merge verification
+
+1. **`deployPosition` (`tools/dlmm.js`)** — ensure `minBinId` / `maxBinId` (and any range validation) are only read **after** they are computed from `activeBin` and `bins_below` / `bins_above`. A duplicated early `if (minBinId > maxBinId)` *above* the `const minBinId = …` lines causes a runtime `ReferenceError` and **silent deploy failure** on live runs.
+2. **Smoke** — `DRY_RUN=true npm start` or your Docker flow; confirm screening can at least reach tool execution without uncaught errors.
+3. **Live wallet** — optional small deploy on a known pool after you are confident RPC + keys are correct.
+
+Document any intentional divergence from upstream in your PR or fork notes so the next merge is easier.
+
+---
+
 ## Disclaimer
 
 This software is provided as-is, with no warranty. Running an autonomous trading agent carries real financial risk — you can lose funds. Always start with `DRY_RUN=true` to verify behavior before going live. Never deploy more capital than you can afford to lose. This is not financial advice.
