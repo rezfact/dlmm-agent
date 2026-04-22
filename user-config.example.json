@@ -35,7 +35,7 @@
   "maxTop10Pct": 60,
   "allowedLaunchpads": [],
   "blockedLaunchpads": [],
-  "blockedSymbols": ["TOKABU", "UNC"],
+  "blockedSymbols": ["TOKABU", "UNC", "LOL"],
   "minTokenAgeHours": null,
   "maxTokenAgeHours": null,
   "athFilterPct": null,
