@@ -105,6 +105,11 @@ function shouldUseLpAgentRelayForDeploy() {
 const BLOCKHASH_RETRY_ATTEMPTS = 5;
 const BLOCKHASH_RETRY_DELAY_MS = 600;
 
+/** Per-side and total bin caps for deploy (matches tool schema: wide-range vs max span). */
+const DEPLOY_MAX_BINS_BELOW = 350;
+const DEPLOY_MAX_BINS_ABOVE = 350;
+const DEPLOY_MAX_TOTAL_BINS = 1400;
+
 function isBlockhashExpiredError(err) {
   const s = String(err?.message || err?.transactionMessage || err || "").toLowerCase();
   return (
