@@ -487,21 +487,34 @@ async function tryScreenerDeployFromParsedJson(content, deployAmountSol) {
     return { fallbackAttempted: false, deploySucceeded: false };
   }
 
-  const amountY = obj.amount_y != null ? Number(obj.amount_y) : deployAmountSol;
+  const rawY = obj.amount_y != null ? Number(obj.amount_y) : NaN;
+  const rawSol = obj.amount_sol != null ? Number(obj.amount_sol) : NaN;
+  const amountY =
+    Number.isFinite(rawY) && rawY > 0
+      ? rawY
+      : Number.isFinite(rawSol) && rawSol > 0
+        ? rawSol
+        : deployAmountSol;
+  if (
+    (!Number.isFinite(rawY) || rawY <= 0) &&
+    (!Number.isFinite(rawSol) || rawSol <= 0) &&
+    (obj.amount_y != null || obj.amount_sol != null)
+  ) {
+    log(
+      "screening_fallback",
+      `Model sent non-positive amount_y/amount_sol — using computed deploy ${deployAmountSol} SOL`
+    );
+  }
+
   const args = {
     pool_address: String(obj.pool_address).trim(),
     pool_name: obj.pool_name,
     bin_step: obj.bin_step,
     bins_below: obj.bins_below,
     bins_above: obj.bins_above,
-    amount_y: Number.isFinite(amountY) ? amountY : deployAmountSol,
+    amount_y: amountY,
     amount_x: obj.amount_x != null ? obj.amount_x : 0,
-    amount_sol:
-      obj.amount_sol != null
-        ? obj.amount_sol
-        : obj.amount_y != null
-          ? obj.amount_y
-          : deployAmountSol,
+    amount_sol: amountY,
     volatility: obj.volatility,
     strategy: obj.strategy,
     downside_pct: obj.downside_pct,
