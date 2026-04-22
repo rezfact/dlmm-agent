@@ -102,6 +102,46 @@ function shouldUseLpAgentRelayForDeploy() {
   return false;
 }
 
+const BLOCKHASH_RETRY_ATTEMPTS = 5;
+const BLOCKHASH_RETRY_DELAY_MS = 600;
+
+function isBlockhashExpiredError(err) {
+  const s = String(err?.message || err?.transactionMessage || err || "").toLowerCase();
+  return (
+    s.includes("blockhash not found") ||
+    s.includes("transaction expired") ||
+    s.includes("signature has expired") ||
+    s.includes("block height exceeded") ||
+    s.includes("expired blockhash") ||
+    (s.includes("blockhash") && s.includes("expired"))
+  );
+}
+
+/**
+ * Rebuild the transaction via `buildTransaction` on each attempt so the blockhash stays fresh.
+ */
+async function sendAndConfirmWithBlockhashRetry(connection, signers, label, buildTransaction) {
+  let lastErr;
+  for (let attempt = 1; attempt <= BLOCKHASH_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const tx = await buildTransaction();
+      return await sendAndConfirmTransaction(connection, tx, signers, { skipPreflight: true });
+    } catch (e) {
+      lastErr = e;
+      if (isBlockhashExpiredError(e) && attempt < BLOCKHASH_RETRY_ATTEMPTS) {
+        log(
+          "tx_retry",
+          `${label}: blockhash/expired, retry ${attempt + 1}/${BLOCKHASH_RETRY_ATTEMPTS} (${String(e?.message || e).slice(0, 120)})`
+        );
+        await new Promise((r) => setTimeout(r, BLOCKHASH_RETRY_DELAY_MS));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 function signSerializedTransaction(serialized, wallet) {
   const bytes = Buffer.from(serialized, "base64");
   try {
