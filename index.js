@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
+import { jsonrepair } from "jsonrepair";
 import { agentLoop, isAgentLoopRunning } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
@@ -417,6 +418,111 @@ function finalizeScreeningReport(rawContent, deploySucceeded) {
   return `⚠️ Screening: model claimed a deploy in text, but deploy_position did not succeed this cycle.\n\n${body}`.slice(0, 4090);
 }
 
+/** Same success rule as agentLoop (on-chain txs or DRY_RUN dry_run). */
+function isDeployToolSuccess(result) {
+  if (!result || result.blocked) return false;
+  if (process.env.DRY_RUN === "true" && result.dry_run) return true;
+  return (
+    result.success === true &&
+    result.position &&
+    Array.isArray(result.txs) &&
+    result.txs.length > 0
+  );
+}
+
+/**
+ * Small local models paste JSON in assistant text instead of calling deploy_position.
+ * Extract the first `{...}` that contains pool_address (after skip heuristics).
+ */
+function extractDeployJsonFromScreenerContent(raw) {
+  const text = stripThink(String(raw || ""));
+  if (/⛔\s*NO DEPLOY/i.test(text)) return null;
+  const trimmed = text.trim();
+  if (/^\s*skipped\s*:/im.test(trimmed)) return null;
+
+  let s = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/m, "");
+  const idx = s.indexOf("{");
+  if (idx === -1) return null;
+
+  let depth = 0;
+  let end = -1;
+  for (let i = idx; i < s.length; i++) {
+    const c = s[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end === -1) return null;
+
+  const jsonStr = s.slice(idx, end + 1);
+  if (!/"pool_address"\s*:/.test(jsonStr)) return null;
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    try {
+      return JSON.parse(jsonrepair(jsonStr));
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * If the screener finished without a successful deploy tool call but embedded deploy args in text,
+ * run deploy_position once through the normal executor (safety checks + logging).
+ */
+async function tryScreenerDeployFromParsedJson(content, deployAmountSol) {
+  const obj = extractDeployJsonFromScreenerContent(content);
+  if (!obj || typeof obj.pool_address !== "string") {
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+  if (obj.skip === true || obj.deploy === false) {
+    log("screening_fallback", "Parsed JSON requests skip — not running deploy fallback");
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+
+  const amountY = obj.amount_y != null ? Number(obj.amount_y) : deployAmountSol;
+  const args = {
+    pool_address: String(obj.pool_address).trim(),
+    pool_name: obj.pool_name,
+    bin_step: obj.bin_step,
+    bins_below: obj.bins_below,
+    bins_above: obj.bins_above,
+    amount_y: Number.isFinite(amountY) ? amountY : deployAmountSol,
+    amount_x: obj.amount_x != null ? obj.amount_x : 0,
+    amount_sol:
+      obj.amount_sol != null
+        ? obj.amount_sol
+        : obj.amount_y != null
+          ? obj.amount_y
+          : deployAmountSol,
+    volatility: obj.volatility,
+    strategy: obj.strategy,
+    downside_pct: obj.downside_pct,
+    upside_pct: obj.upside_pct,
+  };
+
+  log(
+    "screening_fallback",
+    `Executing deploy_position from parsed model JSON (pool ${args.pool_address.slice(0, 8)}…)`
+  );
+  const result = await executeTool("deploy_position", args);
+  const deploySucceeded = isDeployToolSuccess(result);
+  if (!deploySucceeded) {
+    log(
+      "screening_fallback",
+      `Fallback deploy did not succeed: ${result?.error || result?.reason || JSON.stringify(result).slice(0, 240)}`
+    );
+  }
+  return { fallbackAttempted: true, deploySucceeded, result };
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) return null;
   if (isAgentLoopRunning()) {
@@ -664,7 +770,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       const weightsLine = config.darwin?.enabled ? `\nDarwin weights (use as soft prior; do not echo verbatim): ${getWeightsSummary()}` : "";
 
-      const { content, deploySucceeded } = await agentLoop(
+      let { content, deploySucceeded } = await agentLoop(
         `SCREENING CYCLE
 ${strategyBlock}
 Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
@@ -713,6 +819,15 @@ STEPS:
           },
         }
       );
+
+      if (deploySucceeded !== true) {
+        const fb = await tryScreenerDeployFromParsedJson(content, deployAmount);
+        if (fb.deploySucceeded) {
+          deploySucceeded = true;
+          content = `${content}\n\n✅ On-chain deploy completed via server fallback (model output had pool_address but no deploy tool call).`;
+        }
+      }
+
       screenReport = finalizeScreeningReport(content, deploySucceeded === true);
       if (/⛔\s*NO DEPLOY/i.test(content)) {
         appendDecision({

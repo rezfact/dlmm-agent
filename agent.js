@@ -386,6 +386,14 @@ function isToolChoiceRequiredError(error) {
   return /tool_choice/i.test(message) && /required/i.test(message);
 }
 
+/** Ollama / older OpenAI-compatible servers may reject tool_choice "required". */
+function toolChoiceUnsupportedError(error) {
+  const message = String(error?.message || error?.error?.message || error || "").toLowerCase();
+  return /tool_choice|unknown (field|parameter)|unsupported.*tool|invalid_request|does not support/i.test(
+    message
+  );
+}
+
 /**
  * Core ReAct agent loop.
  *
@@ -456,6 +464,13 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       let usedModel = primaryModel;
 
+      /** First cron screening step: force a real tool call so small local models cannot "answer" with JSON only. */
+      const toolChoice =
+        agentType === "SCREENER" && step === 0 && mustUseRealTool && !interactive
+          ? "required"
+          : "auto";
+      let effectiveToolChoice = toolChoice;
+
       // Retry: HTTP/JSON flakes (OpenRouter free tier), empty body, and 502/503/529
       let response;
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -464,7 +479,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType, goal),
-            tool_choice: "auto",
+            tool_choice: effectiveToolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
@@ -480,6 +495,18 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             );
             step--;
             continue stepLoop;
+          }
+          if (
+            effectiveToolChoice === "required" &&
+            toolChoiceUnsupportedError(err)
+          ) {
+            log(
+              "warn",
+              `tool_choice=required not supported (${String(err.message || err).slice(0, 140)}) — using auto`
+            );
+            effectiveToolChoice = "auto";
+            attempt--;
+            continue;
           }
           if (isTransientLlmError(err) && attempt < 2) {
             const wait = (attempt + 1) * 3000;
