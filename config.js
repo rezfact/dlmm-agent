@@ -329,6 +329,9 @@ export const config = {
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    /** If set (e.g. 6), skip Rule 5 “low yield” while PnL % is strictly greater than this (use with takeProfitPct). */
+    lowYieldCloseIgnoreIfPnlAbovePct:
+      u.lowYieldCloseIgnoreIfPnlAbovePct != null ? Number(u.lowYieldCloseIgnoreIfPnlAbovePct) : null,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,

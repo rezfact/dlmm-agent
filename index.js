@@ -1076,10 +1076,17 @@ function getDeterministicCloseRule(position, managementConfig) {
   ) {
     return { action: "CLOSE", rule: 4, reason: "OOR" };
   }
+  const minAgeYield = managementConfig.minAgeBeforeYieldCheck ?? 60;
+  const skipLowYieldWhileProfitable =
+    managementConfig.lowYieldCloseIgnoreIfPnlAbovePct != null &&
+    !pnlSuspect &&
+    position.pnl_pct != null &&
+    position.pnl_pct > managementConfig.lowYieldCloseIgnoreIfPnlAbovePct;
   if (
+    !skipLowYieldWhileProfitable &&
     position.fee_per_tvl_24h != null &&
     position.fee_per_tvl_24h < managementConfig.minFeePerTvl24h &&
-    (position.age_minutes ?? 0) >= 60
+    (position.age_minutes ?? 0) >= minAgeYield
   ) {
     return { action: "CLOSE", rule: 5, reason: "low yield" };
   }
@@ -1148,7 +1155,11 @@ function formatConfigSnapshot() {
     `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
     `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
     `Repeat deploy cooldown: ${config.management.repeatDeployCooldownEnabled ? "on" : "off"} | ${config.management.repeatDeployCooldownTriggerCount}x / ${config.management.repeatDeployCooldownHours}h | min fee earned ${config.management.repeatDeployCooldownMinFeeEarnedPct}% | ${config.management.repeatDeployCooldownScope}`,
-    `Yield floor: ${config.management.minFeePerTvl24h}% | min age ${config.management.minAgeBeforeYieldCheck}m`,
+    `Yield floor: ${config.management.minFeePerTvl24h}% | min age ${config.management.minAgeBeforeYieldCheck}m${
+      config.management.lowYieldCloseIgnoreIfPnlAbovePct != null
+        ? ` | skip low-yield if PnL>${config.management.lowYieldCloseIgnoreIfPnlAbovePct}%`
+        : ""
+    }`,
     `Screening: ${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
     `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
     `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` | ${config.hiveMind.agentId}` : ""}`,
