@@ -8,6 +8,7 @@
 import fs from "fs";
 import { log } from "./logger.js";
 import { dataPath } from "./data-path.js";
+import { config } from "./config.js";
 
 const POOL_MEMORY_FILE = dataPath("pool-memory.json");
 
