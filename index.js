@@ -569,6 +569,90 @@ async function tryScreenerDeployFromParsedJson(content, deployAmountSol) {
   return { fallbackAttempted: true, deploySucceeded, result };
 }
 
+/**
+ * Qwen/small models often end with "Final answer" text that says `Deployed: PAIR` but never
+ * call deploy_position. If we can match the pair to a pre-loaded candidate, deploy here.
+ */
+function findPoolFromPassingByDeployedLabel(labelRaw, passing) {
+  if (!labelRaw || !Array.isArray(passing) || passing.length === 0) return null;
+  const label = String(labelRaw)
+    .trim()
+    .split(/\s*[|—–-]\s*/)[0]
+    .replace(/\*+/g, "")
+    .trim();
+  if (!label || /^skipped\b/i.test(label)) return null;
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const t = norm(label);
+  if (t.length < 3) return null;
+
+  for (const { pool } of passing) {
+    if (norm(pool.name) === t) return pool;
+  }
+  for (const { pool } of passing) {
+    const pn = norm(pool.name);
+    if (pn.includes(t) || t.includes(pn)) return pool;
+  }
+  // Token stem before "SOL" (e.g. dumbmoney from dumbmoneysol vs dumbmoneysol)
+  const stem = t.replace(/sol$/i, "");
+  if (stem.length >= 4) {
+    for (const { pool } of passing) {
+      const pn = norm(pool.name).replace(/sol$/i, "");
+      if (pn && (pn.includes(stem) || stem.includes(pn))) return pool;
+    }
+  }
+  return null;
+}
+
+async function tryScreenerDeployFromDeployedLine(content, passing, deployAmount) {
+  const text = stripThink(String(content || ""));
+  if (!/(?:^|\n)\s*Deployed:\s*[^\n]+/i.test(text)) {
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+  if (/⛔\s*NO DEPLOY/i.test(text)) {
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+  const m = text.match(/(?:^|\n)\s*Deployed:\s*([^\n]+?)(?:\n|$)/i);
+  if (!m) return { fallbackAttempted: false, deploySucceeded: false };
+  const pool = findPoolFromPassingByDeployedLabel(m[1], passing);
+  if (!pool) {
+    log("screening_fallback", `Could not map "Deployed:" line to a pre-loaded pool: ${m[1].trim().slice(0, 80)}`);
+    return { fallbackAttempted: true, deploySucceeded: false };
+  }
+  const v = Number(pool.volatility);
+  const binsFromVol =
+    Number.isFinite(v) && v > 0
+      ? Math.max(35, Math.min(90, Math.round(35 + (v / 5) * 55)))
+      : config.strategy.binsBelow;
+  const args = {
+    pool_address: pool.pool,
+    pool_name: pool.name,
+    bin_step: pool.bin_step,
+    bins_below: binsFromVol,
+    bins_above: 0,
+    amount_y: deployAmount,
+    amount_x: 0,
+    amount_sol: deployAmount,
+    volatility: pool.volatility,
+    strategy: config.strategy.strategy,
+  };
+  log(
+    "screening_fallback",
+    `Executing deploy_position from "Deployed:" line (pool ${args.pool_address.slice(0, 8)}… ${pool.name})`
+  );
+  const result = await executeTool("deploy_position", args);
+  const deploySucceeded = isDeployToolSuccess(result);
+  if (!deploySucceeded) {
+    log(
+      "screening_fallback",
+      `Pair-line fallback deploy did not succeed: ${result?.error || result?.reason || JSON.stringify(result).slice(0, 240)}`
+    );
+  }
+  return { fallbackAttempted: true, deploySucceeded, result };
+}
+
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) return null;
   if (isAgentLoopRunning()) {
@@ -871,6 +955,13 @@ STEPS:
         if (fb.deploySucceeded) {
           deploySucceeded = true;
           content = `${content}\n\n✅ On-chain deploy completed via server fallback (model output had pool_address but no deploy tool call).`;
+        }
+      }
+      if (deploySucceeded !== true) {
+        const pairFb = await tryScreenerDeployFromDeployedLine(content, passing, deployAmount);
+        if (pairFb.deploySucceeded) {
+          deploySucceeded = true;
+          content = `${content}\n\n✅ On-chain deploy completed via server fallback (model wrote "Deployed:" without calling deploy_position).`;
         }
       }
 
