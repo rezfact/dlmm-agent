@@ -1341,6 +1341,29 @@ export async function claimFees({ position_address }) {
   }
 }
 
+/**
+ * Heuristic aligned with @meteora-ag/dlmm `removeLiquidity`: when there are no
+ * non-zero bin liquidity totals and no aggregate fees/rewards, the SDK builds an
+ * empty `activeBins` array and throws (e.g. "Cannot read properties of undefined (reading 'binId')").
+ * In that case we must use `closePositionIfEmpty` instead of `removeLiquidity`.
+ */
+function positionLooksLiquidityAndClaimEmpty(lbPosition) {
+  const pd = lbPosition?.positionData;
+  if (!pd) return false;
+  const nz = (s) => {
+    const n = Number.parseFloat(String(s ?? "0"));
+    return Number.isFinite(n) && n !== 0;
+  };
+  for (const b of pd.positionBinData || []) {
+    if (nz(b.positionLiquidity) || nz(b.binLiquidity)) return false;
+  }
+  if (nz(pd.totalXAmount) || nz(pd.totalYAmount)) return false;
+  const z = new BN(0);
+  if (pd.feeX?.gt?.(z) || pd.feeY?.gt?.(z)) return false;
+  if (pd.rewardOne?.gt?.(z) || pd.rewardTwo?.gt?.(z)) return false;
+  return true;
+}
+
 // ─── Close Position ────────────────────────────────────────────
 export async function closePosition({ position_address, reason }) {
   position_address = normalizeMint(position_address);
@@ -1607,17 +1630,59 @@ export async function closePosition({ position_address, reason }) {
 
     // ─── Step 2: Remove Liquidity & Close ──────────────────────
     log("close", `Step 2: Removing liquidity and closing account`);
+    poolCache.delete(poolAddress.toString());
+    pool = await getPool(poolAddress);
+    let lbPositionForClose = await pool.getPosition(positionPubKey);
+    const pdClose = lbPositionForClose.positionData;
+    const fromBinClose =
+      typeof pdClose?.lowerBinId === "number" ? pdClose.lowerBinId : -887272;
+    const toBinClose =
+      typeof pdClose?.upperBinId === "number" ? pdClose.upperBinId : 887272;
+    const emptyAccountClosePath = positionLooksLiquidityAndClaimEmpty(lbPositionForClose);
+
     for (let attempt = 1; attempt <= BLOCKHASH_RETRY_ATTEMPTS; attempt++) {
       try {
-        const closeTx = await pool.removeLiquidity({
-          user: wallet.publicKey,
-          position: positionPubKey,
-          fromBinId: -887272,
-          toBinId: 887272,
-          bps: new BN(10000),
-          shouldClaimAndClose: true,
-        });
-        for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
+        let txsToSend;
+        if (emptyAccountClosePath) {
+          log(
+            "close",
+            "Step 2: No on-chain liquidity/fees left — closing empty position account"
+          );
+          txsToSend = [
+            await pool.closePositionIfEmpty({
+              owner: wallet.publicKey,
+              position: lbPositionForClose,
+            }),
+          ];
+        } else {
+          try {
+            txsToSend = await pool.removeLiquidity({
+              user: wallet.publicKey,
+              position: positionPubKey,
+              fromBinId: fromBinClose,
+              toBinId: toBinClose,
+              bps: new BN(10000),
+              shouldClaimAndClose: true,
+            });
+          } catch (rmErr) {
+            const rmMsg = rmErr?.message || String(rmErr);
+            if (!rmMsg.includes("binId")) throw rmErr;
+            log(
+              "close",
+              `Step 2: removeLiquidity failed (${rmMsg}); using closePositionIfEmpty`
+            );
+            poolCache.delete(poolAddress.toString());
+            pool = await getPool(poolAddress);
+            lbPositionForClose = await pool.getPosition(positionPubKey);
+            txsToSend = [
+              await pool.closePositionIfEmpty({
+                owner: wallet.publicKey,
+                position: lbPositionForClose,
+              }),
+            ];
+          }
+        }
+        for (const tx of Array.isArray(txsToSend) ? txsToSend : [txsToSend]) {
           const txHash = await sendAndConfirmTransaction(conn, tx, [wallet], { skipPreflight: true });
           closeTxHashes.push(txHash);
         }
@@ -1627,6 +1692,7 @@ export async function closePosition({ position_address, reason }) {
           log("close", `Step 2: blockhash expired, retry ${attempt + 1}/${BLOCKHASH_RETRY_ATTEMPTS}...`);
           poolCache.delete(poolAddress.toString());
           pool = await getPool(poolAddress);
+          lbPositionForClose = await pool.getPosition(positionPubKey);
           await new Promise((r) => setTimeout(r, BLOCKHASH_RETRY_DELAY_MS));
         } else {
           throw e;
