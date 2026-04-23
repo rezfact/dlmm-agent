@@ -383,6 +383,22 @@ const PROTECTED_TOOLS = new Set([
   "self_update",
 ]);
 
+/** Small models often omit position_address or use alternate keys. */
+function normalizePositionToolArgs(name, args) {
+  const base = args && typeof args === "object" && !Array.isArray(args) ? { ...args } : {};
+  if (name !== "close_position" && name !== "claim_fees") return base;
+  const raw =
+    base.position_address ??
+    base.position ??
+    base.position_pubkey ??
+    base.positionPubkey ??
+    base.positionAddress;
+  if (raw != null && String(raw).trim() && String(raw).trim() !== "undefined") {
+    base.position_address = String(raw).trim();
+  }
+  return base;
+}
+
 /**
  * Execute a tool call with safety checks and logging.
  */
@@ -399,6 +415,8 @@ export async function executeTool(name, args) {
     log("error", error);
     return { error };
   }
+
+  args = normalizePositionToolArgs(name, args);
 
   // ─── Pre-execution safety checks ──────────
   if (PROTECTED_TOOLS.has(name)) {
@@ -758,6 +776,24 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      return { pass: true };
+    }
+
+    case "close_position":
+    case "claim_fees": {
+      const addr = args.position_address;
+      if (!addr || typeof addr !== "string" || !addr.trim()) {
+        return {
+          pass: false,
+          reason:
+            "position_address is required — use the base58 key in parentheses on each POSITION: line from the management prompt (not the pool address).",
+        };
+      }
+      try {
+        new PublicKey(addr.trim());
+      } catch {
+        return { pass: false, reason: "position_address is not a valid Solana public key." };
+      }
       return { pass: true };
     }
 

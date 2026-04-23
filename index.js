@@ -348,11 +348,43 @@ export async function runManagementCycle({ silent = false } = {}) {
         ].filter(Boolean).join("\n");
       }).join("\n\n");
 
-      const maxOut = config.llm.isLocalEndpoint ? config.llm.maxTokens : 2048;
-      const { content } = await agentLoop(`
+      const allClose = actionPositions.every((p) => actionMap.get(p.position)?.action === "CLOSE");
+
+      if (allClose) {
+        log("cron", "Management: CLOSE-only batch — running close_position per position (skip LLM; local models omit tool args)");
+        const closeLines = [];
+        for (const p of actionPositions) {
+          const act = actionMap.get(p.position);
+          const reason =
+            act.rule === "exit"
+              ? act.reason || "exit"
+              : act.reason
+                ? `Rule ${act.rule ?? "?"}: ${act.reason}`
+                : "management CLOSE";
+          await liveMessage?.toolStart("close_position");
+          const result = await executeTool("close_position", {
+            position_address: p.position,
+            reason,
+          });
+          const ok = result?.success !== false && !result?.error && !result?.blocked;
+          await liveMessage?.toolFinish("close_position", result, ok);
+          closeLines.push(
+            ok
+              ? `✓ ${p.pair}: closed (${reason.slice(0, 120)})`
+              : `✗ ${p.pair}: ${result?.error || result?.reason || "close failed"}`
+          );
+        }
+        mgmtReport += `\n\n${closeLines.join("\n")}`;
+      } else {
+        const maxOut = config.llm.isLocalEndpoint ? config.llm.maxTokens : 2048;
+        const { content } = await agentLoop(`
 MANAGEMENT ACTION REQUIRED — ${actionPositions.length} position(s)
 
 ${actionBlocks}
+
+POSITION ADDRESS (critical for close_position / claim_fees):
+- For each POSITION: line, position_address MUST be the base58 string inside parentheses — the same length as a Solana address (32–44 chars). Example: POSITION: FOO/SOL (So1111abc...xyz) → position_address="So1111abc...xyz".
+- Never pass pool: as position_address. Never omit position_address.
 
 RULES:
 - CLOSE: call close_position only — it handles fee claiming internally, do NOT call claim_fees first
@@ -362,12 +394,13 @@ RULES:
 
 Execute the required actions. Do NOT re-evaluate CLOSE/CLAIM — rules already applied. Just execute.
 After executing, write a brief one-line result per position.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, maxOut, {
-        onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
-        onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
-      });
+        `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, maxOut, {
+          onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
+          onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
+        });
 
-      mgmtReport += `\n\n${content}`;
+        mgmtReport += `\n\n${content}`;
+      }
     } else {
       log("cron", "Management: all positions STAY — skipping LLM");
       await liveMessage?.note("No tool actions needed.");
