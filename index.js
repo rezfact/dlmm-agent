@@ -621,16 +621,11 @@ async function tryScreenerDeployFromDeployedLine(content, passing, deployAmount)
     log("screening_fallback", `Could not map "Deployed:" line to a pre-loaded pool: ${m[1].trim().slice(0, 80)}`);
     return { fallbackAttempted: true, deploySucceeded: false };
   }
-  const v = Number(pool.volatility);
-  const binsFromVol =
-    Number.isFinite(v) && v > 0
-      ? Math.max(35, Math.min(90, Math.round(35 + (v / 5) * 55)))
-      : config.strategy.binsBelow;
   const args = {
     pool_address: pool.pool,
     pool_name: pool.name,
     bin_step: pool.bin_step,
-    bins_below: binsFromVol,
+    bins_below: binsBelowFromPoolVolatilityForScreener(pool),
     bins_above: 0,
     amount_y: deployAmount,
     amount_x: 0,
@@ -648,6 +643,52 @@ async function tryScreenerDeployFromDeployedLine(content, passing, deployAmount)
     log(
       "screening_fallback",
       `Pair-line fallback deploy did not succeed: ${result?.error || result?.reason || JSON.stringify(result).slice(0, 240)}`
+    );
+  }
+  return { fallbackAttempted: true, deploySucceeded, result };
+}
+
+function binsBelowFromPoolVolatilityForScreener(pool) {
+  const v = Number(pool?.volatility);
+  return Number.isFinite(v) && v > 0
+    ? Math.max(35, Math.min(90, Math.round(35 + (v / 5) * 55)))
+    : config.strategy.binsBelow;
+}
+
+/**
+ * When filters leave exactly one pool, small models still paste pair names or broken keys as
+ * pool_address. If deploy did not succeed, deploy into the sole pre-loaded pool (same as pair-line fallback).
+ */
+async function tryScreenerDeploySinglePoolFallback(content, passing, deployAmount) {
+  if (!Array.isArray(passing) || passing.length !== 1) {
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+  if (/⛔\s*NO DEPLOY/i.test(String(content || ""))) {
+    return { fallbackAttempted: false, deploySucceeded: false };
+  }
+  const pool = passing[0].pool;
+  const args = {
+    pool_address: pool.pool,
+    pool_name: pool.name,
+    bin_step: pool.bin_step,
+    bins_below: binsBelowFromPoolVolatilityForScreener(pool),
+    bins_above: 0,
+    amount_y: deployAmount,
+    amount_x: 0,
+    amount_sol: deployAmount,
+    volatility: pool.volatility,
+    strategy: config.strategy.strategy,
+  };
+  log(
+    "screening_fallback",
+    `Single-candidate deploy fallback (${pool.name} — ${args.pool_address.slice(0, 8)}…)`
+  );
+  const result = await executeTool("deploy_position", args);
+  const deploySucceeded = isDeployToolSuccess(result);
+  if (!deploySucceeded) {
+    log(
+      "screening_fallback",
+      `Single-pool fallback failed: ${result?.error || result?.reason || JSON.stringify(result).slice(0, 240)}`
     );
   }
   return { fallbackAttempted: true, deploySucceeded, result };
@@ -962,6 +1003,13 @@ STEPS:
         if (pairFb.deploySucceeded) {
           deploySucceeded = true;
           content = `${content}\n\n✅ On-chain deploy completed via server fallback (model wrote "Deployed:" without calling deploy_position).`;
+        }
+      }
+      if (deploySucceeded !== true) {
+        const singleFb = await tryScreenerDeploySinglePoolFallback(content, passing, deployAmount);
+        if (singleFb.deploySucceeded) {
+          deploySucceeded = true;
+          content = `${content}\n\n✅ On-chain deploy completed via server fallback (only one candidate; model pool_address was invalid).`;
         }
       }
 
