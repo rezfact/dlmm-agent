@@ -405,6 +405,47 @@ function normalizePositionToolArgs(name, args) {
  * Default SOL size matches screening cron (computeDeployAmount(wallet)).
  * Skips when model is doing token-only (amount_x > 0, no SOL).
  */
+/**
+ * Models paste `POOL: PAIR (base58...)` or pair+address as one string. Extract a valid pubkey.
+ * @returns {string|null} normalized address, or null if input empty
+ */
+function maybeNormalizePoolAddressString(addr) {
+  if (addr == null || typeof addr !== "string") return null;
+  const t = addr.trim();
+  if (!t) return null;
+  if (t.length >= 32 && t.length <= 44) {
+    try {
+      new PublicKey(t);
+      return t;
+    } catch {
+      /* try loose extraction */
+    }
+  }
+  const base58 = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+  const paren = t.match(/\(([1-9A-HJ-NP-Za-km-z]{32,44})\)/);
+  if (paren) {
+    try {
+      new PublicKey(paren[1]);
+      return paren[1];
+    } catch {
+      /* continue */
+    }
+  }
+  const hits = t.match(base58);
+  if (hits?.length) {
+    const uniq = [...new Set(hits)].sort((a, b) => b.length - a.length);
+    for (const cand of uniq) {
+      try {
+        new PublicKey(cand);
+        return cand;
+      } catch {
+        /* next */
+      }
+    }
+  }
+  return t;
+}
+
 async function injectDefaultDeploySolIfMissing(args) {
   const num = (v) => {
     if (v == null || v === "") return NaN;
@@ -452,6 +493,17 @@ export async function executeTool(name, args) {
   }
 
   args = normalizePositionToolArgs(name, args);
+  if (args && typeof args.pool_address === "string" && args.pool_address.trim()) {
+    const rawPool = args.pool_address;
+    const norm = maybeNormalizePoolAddressString(rawPool);
+    if (norm && norm !== rawPool.trim()) {
+      log(
+        "executor",
+        `${name}: normalized pool_address (${rawPool.length} chars → ${norm.slice(0, 8)}…${norm.slice(-4)})`
+      );
+    }
+    if (norm) args.pool_address = norm;
+  }
   if (name === "deploy_position") {
     await injectDefaultDeploySolIfMissing(args);
   }
