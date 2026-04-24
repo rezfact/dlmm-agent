@@ -472,8 +472,37 @@ export async function deployPosition({
     amount_y == null && amount_sol == null
       ? computeDeployAmount((await getWalletBalances()).sol)
       : 0;
-  const finalAmountY = amount_y ?? amount_sol ?? fallbackAmountY;
-  const finalAmountX = amount_x ?? 0;
+  let finalAmountY = amount_y ?? amount_sol ?? fallbackAmountY;
+  let finalAmountX = amount_x ?? 0;
+
+  // Small LLMs often put the SOL size in amount_x while SOL is token Y (quote). That yields
+  // single-sided *token* dust (0 X worth in UI) instead of SOL LP — no fees until corrected.
+  const solMint = config.tokens.SOL;
+  const xMint = pool.lbPair.tokenXMint.toString();
+  const yMint = pool.lbPair.tokenYMint.toString();
+  const yIsSol = yMint === solMint;
+  const xIsSol = xMint === solMint;
+  const solLikeBand = (n) => {
+    if (!Number.isFinite(n) || n <= 0) return false;
+    const cap = Math.max(2, Number(config.risk.maxDeployAmount || 1) * 1.5);
+    return n >= 0.04 && n <= cap;
+  };
+  if (yIsSol && !xIsSol && finalAmountY <= 0 && solLikeBand(finalAmountX)) {
+    log(
+      "deploy_warn",
+      `SOL is token Y but model sent ${finalAmountX} on X — using it as amount_y (single-side SOL)`
+    );
+    finalAmountY = finalAmountX;
+    finalAmountX = 0;
+  } else if (xIsSol && !yIsSol && finalAmountX <= 0 && solLikeBand(finalAmountY)) {
+    log(
+      "deploy_warn",
+      `SOL is token X but model sent ${finalAmountY} on Y — using it as amount_x (single-side SOL)`
+    );
+    finalAmountX = finalAmountY;
+    finalAmountY = 0;
+  }
+
   /** Token X only (no SOL leg); Meteora SDK strategy flag — must stay in sync with addLiquidity calls below. */
   const singleSidedX = finalAmountX > 0 && finalAmountY === 0;
   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
