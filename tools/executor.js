@@ -22,7 +22,7 @@ import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { PublicKey } from "@solana/web3.js";
-import { config, reloadScreeningThresholds } from "../config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount } from "../config.js";
 import { dataPath } from "../data-path.js";
 import { poolMatchesBlockedSymbols } from "../screening-blocklist.js";
 import { getRecentDecisions } from "../decision-log.js";
@@ -401,6 +401,40 @@ function normalizePositionToolArgs(name, args) {
 }
 
 /**
+ * Local LLMs often call deploy_position with pool_address but omit amount_y / send 0.
+ * Default SOL size matches screening cron (computeDeployAmount(wallet)).
+ * Skips when model is doing token-only (amount_x > 0, no SOL).
+ */
+async function injectDefaultDeploySolIfMissing(args) {
+  const num = (v) => {
+    if (v == null || v === "") return NaN;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const amountX = num(args.amount_x);
+  const amountY = num(args.amount_y);
+  const amountSol = num(args.amount_sol);
+  const bestY =
+    amountY > 0 ? amountY : amountSol > 0 ? amountSol : 0;
+  if (bestY > 0) return;
+  if (amountX > 0) return;
+
+  try {
+    const bal = await getWalletBalances();
+    const deploy = computeDeployAmount(bal.sol);
+    if (!(deploy > 0)) return;
+    args.amount_y = deploy;
+    args.amount_sol = deploy;
+    log(
+      "executor",
+      `deploy_position: default amount_y=${deploy} SOL (wallet ${bal.sol.toFixed(4)} SOL — model omitted or non-positive amount_y)`
+    );
+  } catch (e) {
+    log("executor_warn", `injectDefaultDeploySolIfMissing: ${e.message}`);
+  }
+}
+
+/**
  * Execute a tool call with safety checks and logging.
  */
 export async function executeTool(name, args) {
@@ -418,6 +452,9 @@ export async function executeTool(name, args) {
   }
 
   args = normalizePositionToolArgs(name, args);
+  if (name === "deploy_position") {
+    await injectDefaultDeploySolIfMissing(args);
+  }
 
   // ─── Pre-execution safety checks ──────────
   if (PROTECTED_TOOLS.has(name)) {
